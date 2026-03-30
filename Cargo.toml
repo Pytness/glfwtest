@@ -7,4 +7,5 @@ edition = "2024"
 bytemuck = "1.25.0"
 glfw = "0.62.0"
 glow = "0.17.0"
-rusttype = { version = "0.9.3", features = ["gpu_cache"] }
+freetype-rs = "0.38.0"
+rustybuzz = "0.20.1"

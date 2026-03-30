@@ -1,7 +1,11 @@
+mod glyphs;
+
+use freetype::face::LoadFlag;
 use glfw::{Action, Context as _, Key, WindowEvent, WindowHint, WindowMode};
 use glow::{HasContext, NativeTexture};
-use rusttype::gpu_cache::Cache;
-use rusttype::{Font, PositionedGlyph, Scale, point};
+use rustybuzz::{Face, UnicodeBuffer};
+
+use self::glyphs::TextRenderer;
 
 macro_rules! assets_path {
     ($name: literal) => {
@@ -71,21 +75,8 @@ macro_rules! include_shader {
 }
 
 macro_rules! include_font {
-    ($name: literal) => {{
-        let font_data = include_bytes!(concat!(assets_path!("fonts/"), $name));
-        Font::try_from_bytes(font_data as &[u8]).expect("Failed to load font")
-    }};
+    ($name: literal) => {{ include_bytes!(concat!(assets_path!("fonts/"), $name)) }};
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Vertex {
-    pos: [f32; 2],
-    uv: [f32; 2],
-}
-
-unsafe impl bytemuck::Pod for Vertex {}
-unsafe impl bytemuck::Zeroable for Vertex {}
 
 fn main() {
     // Initialize GLFW
@@ -122,23 +113,17 @@ fn main() {
          0.5, -0.5, 0.0, 0.0, 0.0, 1.0,
     ];
 
-    let font = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
-    let scale = Scale::uniform(50.0);
-    let v_metrics = font.v_metrics(scale);
+    let font_bytes = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
+    let scale = 48.0;
+
+    let mut text_renderer = unsafe { TextRenderer::new(&gl, font_bytes, scale as u32) };
 
     let cache_width: u32 = 1024;
     let cache_height: u32 = 1024;
 
     let font_texture = unsafe { gl.create_texture().unwrap() };
 
-    let mut cache = build_font_cache(&gl, font_texture, cache_width, cache_height);
-
-    let text = "Hello world";
-    let start = point(20.0, 50.0 + v_metrics.ascent);
-
-    let glyphs: Vec<_> = font.layout(text, scale, start).collect();
-
-    cache_glyphs(&gl, &mut cache, font_texture, &glyphs);
+    let text = "fi != -> ===";
 
     let triangle_program = unsafe { include_shader!(gl, "triangle") };
     let font_program = unsafe { include_shader!(gl, "font") };
@@ -222,43 +207,42 @@ fn main() {
                 window.get_framebuffer_size().0 as f32,
                 window.get_framebuffer_size().1 as f32,
             );
-            gl.clear_color(0.1, 0.12, 0.15, 1.0);
+
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
 
             gl.use_program(Some(triangle_program));
             gl.bind_vertex_array(Some(vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
 
-            let start = point(
-                start_point,
-                (window_size.1 as f32 / 2.0).ceil() + v_metrics.ascent,
+            // gl.use_program(Some(font_program));
+            // gl.enable(glow::BLEND);
+            // gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            // gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
+            // gl.buffer_data_u8_slice(
+            //     glow::ARRAY_BUFFER,
+            //     bytemuck::cast_slice(&font_vertices),
+            //     glow::DYNAMIC_DRAW,
+            // );
+            // gl.uniform_matrix_4_f32_slice(proj_loc.as_ref(), false, &proj);
+            // gl.uniform_3_f32(text_color_loc.as_ref(), 1.0, 0.0, 1.0);
+            //
+            // gl.bind_vertex_array(Some(font_vao));
+            //
+            // gl.active_texture(glow::TEXTURE0);
+            // gl.bind_texture(glow::TEXTURE_2D, Some(font_texture));
+            //
+            // gl.draw_arrays(glow::TRIANGLES, 0, font_vertices.len() as i32);
+
+            text_renderer.draw_text(
+                &gl,
+                "office != affine -> ligatures?",
+                20.0,
+                80.0,
+                32.0,
+                [1.0, 1.0, 1.0],
+                &proj,
             );
-
-            let glyphs: Vec<_> = font.layout(text, scale, start).collect();
-            let font_vertices: Vec<Vertex> = glyphs
-                .iter()
-                .filter_map(|glyph| get_glyph_rect(&cache, glyph))
-                .flatten()
-                .collect();
-
-            gl.use_program(Some(font_program));
-            gl.enable(glow::BLEND);
-            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
-            gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                bytemuck::cast_slice(&font_vertices),
-                glow::DYNAMIC_DRAW,
-            );
-            gl.uniform_matrix_4_f32_slice(proj_loc.as_ref(), false, &proj);
-            gl.uniform_3_f32(text_color_loc.as_ref(), 1.0, 0.0, 1.0);
-
-            gl.bind_vertex_array(Some(font_vao));
-
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(font_texture));
-
-            gl.draw_arrays(glow::TRIANGLES, 0, font_vertices.len() as i32);
         }
 
         window.swap_buffers();
@@ -283,121 +267,121 @@ fn ortho(width: f32, height: f32) -> [f32; 16] {
     ];
 }
 
-fn build_font_cache(
-    gl: &glow::Context,
-    texture: NativeTexture,
-    cache_width: u32,
-    cache_height: u32,
-) -> Cache<'_> {
-    unsafe {
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::R8 as i32,
-            cache_width as i32,
-            cache_height as i32,
-            0,
-            glow::RED,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&vec![0u8; (cache_width * cache_height) as usize])),
-        );
+// fn build_font_cache(
+//     gl: &glow::Context,
+//     texture: NativeTexture,
+//     cache_width: u32,
+//     cache_height: u32,
+// ) -> Cache<'_> {
+//     unsafe {
+//         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+//         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+//         gl.tex_image_2d(
+//             glow::TEXTURE_2D,
+//             0,
+//             glow::R8 as i32,
+//             cache_width as i32,
+//             cache_height as i32,
+//             0,
+//             glow::RED,
+//             glow::UNSIGNED_BYTE,
+//             glow::PixelUnpackData::Slice(Some(&vec![0u8; (cache_width * cache_height) as usize])),
+//         );
+//
+//         gl.tex_parameter_i32(
+//             glow::TEXTURE_2D,
+//             glow::TEXTURE_MIN_FILTER,
+//             glow::LINEAR as i32,
+//         );
+//         gl.tex_parameter_i32(
+//             glow::TEXTURE_2D,
+//             glow::TEXTURE_MAG_FILTER,
+//             glow::LINEAR as i32,
+//         );
+//         gl.tex_parameter_i32(
+//             glow::TEXTURE_2D,
+//             glow::TEXTURE_WRAP_S,
+//             glow::CLAMP_TO_EDGE as i32,
+//         );
+//         gl.tex_parameter_i32(
+//             glow::TEXTURE_2D,
+//             glow::TEXTURE_WRAP_T,
+//             glow::CLAMP_TO_EDGE as i32,
+//         );
+//     }
+//
+//     Cache::builder()
+//         .dimensions(cache_width, cache_height)
+//         .build()
+// }
 
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-    }
-
-    Cache::builder()
-        .dimensions(cache_width, cache_height)
-        .build()
-}
-
-fn cache_glyphs<'a>(
-    gl: &glow::Context,
-    cache: &mut Cache<'a>,
-    texture: NativeTexture,
-    glyphs: &[PositionedGlyph<'a>],
-) {
-    for glyph in glyphs {
-        cache.queue_glyph(0, glyph.clone());
-    }
-
-    cache
-        .cache_queued(|rect, data| unsafe {
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                rect.min.x as i32,
-                rect.min.y as i32,
-                rect.width() as i32,
-                rect.height() as i32,
-                glow::RED,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(data)),
-            );
-        })
-        .unwrap();
-}
-
-fn get_glyph_rect<'a>(cache: &Cache<'a>, glyph: &PositionedGlyph<'a>) -> Option<[Vertex; 6]> {
-    if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
-        let x0 = screen_rect.min.x as f32;
-        let y0 = screen_rect.min.y as f32;
-        let x1 = screen_rect.max.x as f32;
-        let y1 = screen_rect.max.y as f32;
-
-        let u0 = uv_rect.min.x;
-        let v0 = uv_rect.min.y;
-        let u1 = uv_rect.max.x;
-        let v1 = uv_rect.max.y;
-
-        Some([
-            Vertex {
-                pos: [x0, y0],
-                uv: [u0, v0],
-            },
-            Vertex {
-                pos: [x1, y0],
-                uv: [u1, v0],
-            },
-            Vertex {
-                pos: [x1, y1],
-                uv: [u1, v1],
-            },
-            Vertex {
-                pos: [x0, y0],
-                uv: [u0, v0],
-            },
-            Vertex {
-                pos: [x1, y1],
-                uv: [u1, v1],
-            },
-            Vertex {
-                pos: [x0, y1],
-                uv: [u0, v1],
-            },
-        ])
-    } else {
-        None
-    }
-}
+// fn cache_glyphs<'a>(
+//     gl: &glow::Context,
+//     cache: &mut Cache<'a>,
+//     texture: NativeTexture,
+//     glyphs: &[PositionedGlyph<'a>],
+// ) {
+//     for glyph in glyphs {
+//         cache.queue_glyph(0, glyph.clone());
+//     }
+//
+//     cache
+//         .cache_queued(|rect, data| unsafe {
+//             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+//             gl.tex_sub_image_2d(
+//                 glow::TEXTURE_2D,
+//                 0,
+//                 rect.min.x as i32,
+//                 rect.min.y as i32,
+//                 rect.width() as i32,
+//                 rect.height() as i32,
+//                 glow::RED,
+//                 glow::UNSIGNED_BYTE,
+//                 glow::PixelUnpackData::Slice(Some(data)),
+//             );
+//         })
+//         .unwrap();
+// }
+//
+// fn get_glyph_rect<'a>(cache: &Cache<'a>, glyph: &PositionedGlyph<'a>) -> Option<[Vertex; 6]> {
+//     if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
+//         let x0 = screen_rect.min.x as f32;
+//         let y0 = screen_rect.min.y as f32;
+//         let x1 = screen_rect.max.x as f32;
+//         let y1 = screen_rect.max.y as f32;
+//
+//         let u0 = uv_rect.min.x;
+//         let v0 = uv_rect.min.y;
+//         let u1 = uv_rect.max.x;
+//         let v1 = uv_rect.max.y;
+//
+//         Some([
+//             Vertex {
+//                 pos: [x0, y0],
+//                 uv: [u0, v0],
+//             },
+//             Vertex {
+//                 pos: [x1, y0],
+//                 uv: [u1, v0],
+//             },
+//             Vertex {
+//                 pos: [x1, y1],
+//                 uv: [u1, v1],
+//             },
+//             Vertex {
+//                 pos: [x0, y0],
+//                 uv: [u0, v0],
+//             },
+//             Vertex {
+//                 pos: [x1, y1],
+//                 uv: [u1, v1],
+//             },
+//             Vertex {
+//                 pos: [x0, y1],
+//                 uv: [u0, v1],
+//             },
+//         ])
+//     } else {
+//         None
+//     }
+// }
