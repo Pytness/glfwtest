@@ -2,8 +2,6 @@ use glfw::{Action, Context as _, Key, WindowEvent, WindowHint, WindowMode};
 use glow::{HasContext, NativeTexture};
 use rusttype::gpu_cache::Cache;
 use rusttype::{Font, PositionedGlyph, Scale, point};
-use std::thread::sleep;
-use std::time::Duration;
 
 macro_rules! assets_path {
     ($name: literal) => {
@@ -96,9 +94,10 @@ fn main() {
     // Request an OpenGL 3.3 Core context
     glfw.window_hint(WindowHint::ContextVersion(3, 3));
     glfw.window_hint(WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
+    glfw.window_hint(WindowHint::TransparentFramebuffer(true));
 
     let (mut window, events) = glfw
-        .create_window(800, 600, "GLFW + glow", WindowMode::Windowed)
+        .create_window(800, 600, "GLFW", WindowMode::Windowed)
         .expect("Failed to create window");
 
     window.make_current();
@@ -115,17 +114,20 @@ fn main() {
     };
 
     // Simple triangle data: position (x, y, z) + color (r, g, b)
+    #[rustfmt::skip]
     let vertices: [f32; 18] = [
-        // x,    y,    z,    r,    g,    b
-        0.0, 0.5, 0.0, 1.0, 0.0, 0.0, -0.5, -0.5, 0.0, 0.0, 1.0, 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 1.0,
+        // x,    y,   z,   r,   g,   b
+         0.0,  0.5, 0.0, 1.0, 0.0, 0.0,
+        -0.5, -0.5, 0.0, 0.0, 1.0, 0.0,
+         0.5, -0.5, 0.0, 0.0, 0.0, 1.0,
     ];
 
     let font = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
     let scale = Scale::uniform(50.0);
     let v_metrics = font.v_metrics(scale);
 
-    let cache_width = 1024u32;
-    let cache_height = 1024u32;
+    let cache_width: u32 = 1024;
+    let cache_height: u32 = 1024;
 
     let font_texture = unsafe { gl.create_texture().unwrap() };
 
@@ -202,6 +204,7 @@ fn main() {
         let window_size = window.get_framebuffer_size();
 
         glfw.poll_events();
+
         for (_, event) in glfw::flush_messages(&events) {
             match event {
                 WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
@@ -260,7 +263,7 @@ fn main() {
 
         window.swap_buffers();
         start_point += 1.0;
-        sleep(Duration::from_millis(16));
+        glfw.wait_events();
     }
 
     unsafe {
@@ -271,24 +274,13 @@ fn main() {
 }
 
 fn ortho(width: f32, height: f32) -> [f32; 16] {
-    [
-        2.0 / width,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        -2.0 / height,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        -1.0,
-        0.0,
-        -1.0,
-        1.0,
-        0.0,
-        1.0,
-    ]
+    #[rustfmt::skip]
+    return [
+        2.0 / width, 0.0, 0.0, 0.0,
+        0.0, -2.0 / height, 0.0, 0.0,
+        0.0, 0.0, -1.0, 0.0,
+        -1.0, 1.0, 0.0, 1.0,
+    ];
 }
 
 fn build_font_cache(
@@ -296,7 +288,7 @@ fn build_font_cache(
     texture: NativeTexture,
     cache_width: u32,
     cache_height: u32,
-) -> Cache {
+) -> Cache<'_> {
     unsafe {
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
@@ -334,11 +326,9 @@ fn build_font_cache(
         );
     }
 
-    let mut cache = Cache::builder()
+    Cache::builder()
         .dimensions(cache_width, cache_height)
-        .build();
-
-    cache
+        .build()
 }
 
 fn cache_glyphs<'a>(
