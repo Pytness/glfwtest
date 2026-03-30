@@ -6,8 +6,23 @@ macro_rules! include_shader {
         let gl = &$gl;
         let program = gl.create_program().expect("Cannot create program");
 
-        let vs_source = include_str!(concat!("shaders/", $name, ".vert"));
-        let fs_source = include_str!(concat!("shaders/", $name, ".frag"));
+        let vs_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/",
+            $name,
+            "/",
+            $name,
+            ".vert"
+        ));
+
+        let fs_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/",
+            $name,
+            "/",
+            $name,
+            ".frag"
+        ));
 
         let vs = gl
             .create_shader(glow::VERTEX_SHADER)
