@@ -1,14 +1,19 @@
 use glfw::{Action, Context as _, Key, WindowEvent, WindowHint, WindowMode};
 use glow::HasContext;
 
+macro_rules! assets_path {
+    ($name: literal) => {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/", $name)
+    };
+}
+
 macro_rules! include_shader {
     ($gl: ident, $name: literal ) => {{
         let gl = &$gl;
         let program = gl.create_program().expect("Cannot create program");
 
         let vs_source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/",
+            assets_path!("shaders/"),
             $name,
             "/",
             $name,
@@ -16,8 +21,7 @@ macro_rules! include_shader {
         ));
 
         let fs_source = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/shaders/",
+            assets_path!("shaders/"),
             $name,
             "/",
             $name,
