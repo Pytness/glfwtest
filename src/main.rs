@@ -2,9 +2,8 @@ mod glyphs;
 mod macros;
 
 use freetype::face::LoadFlag;
-use glfw::{Action, Context as _, Key, WindowEvent, WindowHint, WindowMode};
+use glfw::{Action, Context as _, InitHint, Key, Platform, WindowEvent, WindowHint, WindowMode};
 use glow::{HasContext, NativeTexture};
-use rustybuzz::{Face, UnicodeBuffer};
 
 use self::glyphs::TextRenderer;
 use self::macros::macs::{include_font, include_shader};
@@ -45,9 +44,9 @@ fn main() {
     ];
 
     let font_bytes = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
-    let scale = 48.0;
+    let font_size = 48.0;
 
-    let mut text_renderer = unsafe { TextRenderer::new(&gl, font_bytes, scale as u32) };
+    let mut text_renderer = unsafe { TextRenderer::new(&gl, font_bytes, font_size as u32) };
 
     let cache_width: u32 = 1024;
     let cache_height: u32 = 1024;
@@ -119,7 +118,7 @@ fn main() {
     while !window.should_close() {
         let window_size = window.get_framebuffer_size();
 
-        glfw.poll_events();
+        glfw.wait_events_timeout(0.01);
 
         for (_, event) in glfw::flush_messages(&events) {
             match event {
@@ -168,16 +167,17 @@ fn main() {
             text_renderer.draw_text(
                 &gl,
                 "office != affine -> ligatures?",
-                20.0,
+                start_point,
                 80.0,
-                32.0,
+                font_size,
                 [1.0, 1.0, 1.0],
                 &proj,
             );
         }
 
         window.swap_buffers();
-        start_point += 1.0;
+
+        start_point += 0.1;
         glfw.wait_events();
     }
 
