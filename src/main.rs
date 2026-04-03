@@ -1,6 +1,5 @@
 mod gl_handler;
 mod macros;
-mod renderer;
 mod renderers;
 
 use std::{ffi::CString, num::NonZeroU32};
