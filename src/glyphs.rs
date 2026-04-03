@@ -1,6 +1,7 @@
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
 use rustybuzz::{Face as RbFace, UnicodeBuffer};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::macros::macs::include_shader;
@@ -52,7 +53,7 @@ pub struct TextRenderer {
     ft_face: freetype::Face,
     rb_face: RbFace<'static>,
 
-    glyphs: HashMap<u16, GlyphTexture>,
+    glyphs: RefCell<HashMap<u16, GlyphTexture>>,
 
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
@@ -68,56 +69,58 @@ impl TextRenderer {
         self.rb_face.units_per_em() as f32
     }
     pub unsafe fn new(gl: &glow::Context, font_bytes: &[u8], px_size: u32) -> Self {
-        // rustybuzz face from raw bytes
-        // leak for simplicity in this minimal example
-        let bytes = font_bytes.to_vec();
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let rb_face = RbFace::from_slice(leaked, 0).expect("failed to create rustybuzz face");
-
-        // freetype face
-        let ft_lib = Library::init().expect("failed to init freetype");
-
-        let ft_face = ft_lib
-            .new_memory_face(font_bytes.to_vec(), 0)
-            .expect("failed to load freetype face");
-
-        ft_face
-            .set_pixel_sizes(0, px_size)
-            .expect("failed to set pixel size");
-
-        let program = include_shader!(gl, "font");
-
         unsafe {
-            let vao = gl.create_vertex_array().unwrap();
-            let vbo = gl.create_buffer().unwrap();
+            // rustybuzz face from raw bytes
+            // leak for simplicity in this minimal example
+            let bytes = font_bytes.to_vec();
+            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            let rb_face = RbFace::from_slice(leaked, 0).expect("failed to create rustybuzz face");
 
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            // freetype face
+            let ft_lib = Library::init().expect("failed to init freetype");
 
-            gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
+            let ft_face = ft_lib
+                .new_memory_face(font_bytes.to_vec(), 0)
+                .expect("failed to load freetype face");
 
-            gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
+            ft_face
+                .set_pixel_sizes(0, px_size)
+                .expect("failed to set pixel size");
 
-            gl.bind_vertex_array(None);
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            let program = include_shader!(gl, "font");
 
-            let u_proj = gl.get_uniform_location(program, "u_proj");
-            let u_color = gl.get_uniform_location(program, "u_color");
-            let u_tex = gl.get_uniform_location(program, "u_tex");
+            unsafe {
+                let vao = gl.create_vertex_array().unwrap();
+                let vbo = gl.create_buffer().unwrap();
 
-            Self {
-                ft_lib,
-                ft_face,
-                rb_face,
-                glyphs: HashMap::new(),
-                program,
-                vao,
-                vbo,
-                u_proj,
-                u_color,
-                u_tex,
+                gl.bind_vertex_array(Some(vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+
+                gl.enable_vertex_attrib_array(0);
+                gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
+
+                gl.enable_vertex_attrib_array(1);
+                gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
+
+                gl.bind_vertex_array(None);
+                gl.bind_buffer(glow::ARRAY_BUFFER, None);
+
+                let u_proj = gl.get_uniform_location(program, "u_proj");
+                let u_color = gl.get_uniform_location(program, "u_color");
+                let u_tex = gl.get_uniform_location(program, "u_tex");
+
+                Self {
+                    ft_lib,
+                    ft_face,
+                    rb_face,
+                    glyphs: RefCell::new(HashMap::new()),
+                    program,
+                    vao,
+                    vbo,
+                    u_proj,
+                    u_color,
+                    u_tex,
+                }
             }
         }
     }
@@ -146,11 +149,11 @@ impl TextRenderer {
     }
 
     pub unsafe fn get_or_create_glyph(
-        &mut self,
+        &self,
         gl: &glow::Context,
         glyph_id: u16,
     ) -> Option<&GlyphTexture> {
-        if !self.glyphs.contains_key(&glyph_id) {
+        if !self.glyphs.borrow().contains_key(&glyph_id) {
             self.ft_face
                 .load_glyph(glyph_id as u32, LoadFlag::RENDER)
                 .expect("freetype load_glyph failed");
@@ -203,7 +206,7 @@ impl TextRenderer {
                     glow::LINEAR as i32,
                 );
 
-                self.glyphs.insert(
+                self.glyphs.borrow_mut().insert(
                     glyph_id,
                     GlyphTexture {
                         tex,
@@ -216,11 +219,21 @@ impl TextRenderer {
                 );
             }
         }
-        Some(self.glyphs.get(&glyph_id).unwrap())
+
+        let glyph = unsafe {
+            self.glyphs
+                .try_borrow_unguarded()
+                .ok()
+                .unwrap()
+                .get(&glyph_id)
+                .unwrap()
+        };
+
+        Some(glyph)
     }
 
     pub unsafe fn draw_text(
-        &mut self,
+        &self,
         gl: &glow::Context,
         text: &str,
         mut pen_x: f32,
