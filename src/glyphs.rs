@@ -8,7 +8,7 @@ use crate::macros::macs::include_shader;
 
 struct GlyphId(u32);
 
-struct ShapedGlyph {
+pub struct ShapedGlyph {
     glyph_id: GlyphId,
     x_advance: f32,
     y_advance: f32,
@@ -89,38 +89,36 @@ impl TextRenderer {
 
             let program = include_shader!(gl, "font");
 
-            unsafe {
-                let vao = gl.create_vertex_array().unwrap();
-                let vbo = gl.create_buffer().unwrap();
+            let vao = gl.create_vertex_array().unwrap();
+            let vbo = gl.create_buffer().unwrap();
 
-                gl.bind_vertex_array(Some(vao));
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
 
-                gl.enable_vertex_attrib_array(0);
-                gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
+            gl.enable_vertex_attrib_array(0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
 
-                gl.enable_vertex_attrib_array(1);
-                gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
+            gl.enable_vertex_attrib_array(1);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
 
-                gl.bind_vertex_array(None);
-                gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            gl.bind_vertex_array(None);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
-                let u_proj = gl.get_uniform_location(program, "u_proj");
-                let u_color = gl.get_uniform_location(program, "u_text_color");
-                let u_tex = gl.get_uniform_location(program, "u_tex");
+            let u_proj = gl.get_uniform_location(program, "u_proj");
+            let u_color = gl.get_uniform_location(program, "u_text_color");
+            let u_tex = gl.get_uniform_location(program, "u_tex");
 
-                Self {
-                    ft_lib,
-                    ft_face,
-                    rb_face,
-                    glyphs: RefCell::new(HashMap::new()),
-                    program,
-                    vao,
-                    vbo,
-                    u_proj,
-                    u_color,
-                    u_tex,
-                }
+            Self {
+                ft_lib,
+                ft_face,
+                rb_face,
+                glyphs: RefCell::new(HashMap::new()),
+                program,
+                vao,
+                vbo,
+                u_proj,
+                u_color,
+                u_tex,
             }
         }
     }
