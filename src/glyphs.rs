@@ -106,7 +106,7 @@ impl TextRenderer {
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
                 let u_proj = gl.get_uniform_location(program, "u_proj");
-                let u_color = gl.get_uniform_location(program, "u_color");
+                let u_color = gl.get_uniform_location(program, "u_text_color");
                 let u_tex = gl.get_uniform_location(program, "u_tex");
 
                 Self {
