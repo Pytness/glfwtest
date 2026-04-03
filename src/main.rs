@@ -2,33 +2,28 @@ mod glyphs;
 mod macros;
 // mod temp;
 
-use std::{ffi::CString, num::NonZeroU32};
+use std::ffi::CString;
 
-use glfw::{Action, InitHint, Key, Platform, WindowHint, WindowMode};
-use glow::{HasContext, NativeTexture};
 use glutin::{
-    config::{Config, ConfigTemplateBuilder, GetGlConfig},
+    config::{Config, ConfigTemplateBuilder},
     context::{NotCurrentContext, PossiblyCurrentContext},
 };
 
 use winit::{
     application::ApplicationHandler,
-    event::{Event, WindowEvent},
+    event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     raw_window_handle::HasWindowHandle,
     window::{Window, WindowId},
 };
 
-use self::glyphs::TextRenderer;
-use self::macros::macs::{include_font, include_shader};
 use glutin::{
     context::{ContextApi, ContextAttributesBuilder, Version},
-    display::{DisplayApiPreference, GetGlDisplay},
+    display::GetGlDisplay,
     prelude::*,
-    surface::{SurfaceAttributesBuilder, WindowSurface},
 };
 
-use glutin_winit::{DisplayBuilder, GlWindow};
+use glutin_winit::DisplayBuilder;
 use winit::window::WindowAttributes;
 
 struct App {
@@ -80,7 +75,7 @@ enum GlDisplayCreationState {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let (window, gl_config) = match &mut self.gl_display {
+        let (_window, _gl_config) = match &mut self.gl_display {
             GlDisplayCreationState::Builder(display_builder) => {
                 let (window, gl_config) = match display_builder.clone().build(
                     event_loop,
@@ -107,7 +102,7 @@ impl ApplicationHandler for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        id: WindowId,
+        _id: WindowId,
         event: winit::event::WindowEvent,
     ) {
         match event {
