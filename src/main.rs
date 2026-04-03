@@ -1,12 +1,13 @@
 mod glyphs;
 mod macros;
-// mod temp;
 
-use std::ffi::CString;
+use std::{ffi::CString, num::NonZeroU32};
 
+use glow::HasContext;
 use glutin::{
-    config::{Config, ConfigTemplateBuilder},
+    config::{Config, ConfigTemplateBuilder, GetGlConfig},
     context::{NotCurrentContext, PossiblyCurrentContext},
+    surface::{Surface, WindowSurface},
 };
 
 use winit::{
@@ -23,18 +24,22 @@ use glutin::{
     prelude::*,
 };
 
-use glutin_winit::DisplayBuilder;
+use glutin_winit::{DisplayBuilder, GlWindow};
 use winit::window::WindowAttributes;
+
+use self::macros::macs::include_font;
 
 struct App {
     template: ConfigTemplateBuilder,
     state: Option<AppState>,
     gl_display: GlDisplayCreationState,
     gl_context: Option<PossiblyCurrentContext>,
+    gl: Option<glow::Context>,
+    text_renderer: Option<glyphs::TextRenderer>,
 }
 
 struct AppState {
-    // gl_surface: Surface<WindowSurface>,
+    gl_surface: Surface<WindowSurface>,
     window: Window,
 }
 
@@ -62,20 +67,16 @@ impl App {
             state: None,
             gl_display: GlDisplayCreationState::Builder(Box::new(display_builder)),
             gl_context: None,
+            gl: None,
+            text_renderer: None,
         }
     }
-}
 
-enum GlDisplayCreationState {
-    /// The display was not build yet.
-    Builder(Box<DisplayBuilder>),
-    /// The display was already created for the application.
-    Init,
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let (_window, _gl_config) = match &mut self.gl_display {
+    fn get_or_create_gl_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+    ) -> Option<(Window, Config)> {
+        match &mut self.gl_display {
             GlDisplayCreationState::Builder(display_builder) => {
                 let (window, gl_config) = match display_builder.clone().build(
                     event_loop,
@@ -91,12 +92,73 @@ impl ApplicationHandler for App {
                 self.gl_context =
                     Some(create_gl_context(&window, &gl_config).treat_as_possibly_current());
 
-                (window, gl_config)
+                Some((window, gl_config))
             }
             GlDisplayCreationState::Init => {
-                todo!()
+                let gl_config = self.gl_context.as_ref().unwrap().config();
+
+                match glutin_winit::finalize_window(event_loop, window_attributes(), &gl_config) {
+                    Ok(window) => Some((window, gl_config)),
+                    Err(_) => {
+                        // self.exit_state = Err(err.into());
+                        event_loop.exit();
+                        None
+                    }
+                }
             }
+        }
+    }
+}
+
+enum GlDisplayCreationState {
+    /// The display was not build yet.
+    Builder(Box<DisplayBuilder>),
+    /// The display was already created for the application.
+    Init,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let gl_window = self.get_or_create_gl_window(event_loop);
+
+        if gl_window.is_none() {
+            return;
+        }
+
+        let (window, gl_config) = gl_window.unwrap();
+
+        let attrs = window
+            .build_surface_attributes(Default::default())
+            .expect("Failed to build surface attributes");
+
+        let gl_surface = unsafe {
+            gl_config
+                .display()
+                .create_window_surface(&gl_config, &attrs)
+                .expect("Failed to create surface")
         };
+
+        let gl_context = self.gl_context.as_ref().unwrap();
+        gl_context.make_current(&gl_surface).unwrap();
+
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                let symbol = CString::new(s).unwrap();
+                gl_config.display().get_proc_address(symbol.as_c_str())
+            })
+        };
+
+        self.gl = Some(gl);
+
+        self.text_renderer.get_or_insert_with(|| unsafe {
+            glyphs::TextRenderer::new(
+                self.gl.as_ref().unwrap(),
+                include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
+                48,
+            )
+        });
+
+        self.state = Some(AppState { gl_surface, window });
     }
 
     fn window_event(
@@ -106,6 +168,33 @@ impl ApplicationHandler for App {
         event: winit::event::WindowEvent,
     ) {
         match event {
+            WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
+                // Some platforms like EGL require resizing GL surface to update the size
+                // Notable platforms here are Wayland and macOS, other don't require it
+                // and the function is no-op, but it's wise to resize it for portability
+                // reasons.
+                if let Some(AppState {
+                    gl_surface,
+                    window: _,
+                }) = self.state.as_ref()
+                {
+                    let gl_context = self.gl_context.as_ref().unwrap();
+                    gl_surface.resize(
+                        gl_context,
+                        NonZeroU32::new(size.width).unwrap(),
+                        NonZeroU32::new(size.height).unwrap(),
+                    );
+
+                    unsafe {
+                        self.gl.as_ref().unwrap().viewport(
+                            0,
+                            0,
+                            size.width as i32,
+                            size.height as i32,
+                        );
+                    }
+                }
+            }
             WindowEvent::CloseRequested => {
                 println!("The close button was pressed; stopping");
                 event_loop.exit();
@@ -127,6 +216,31 @@ impl ApplicationHandler for App {
                 // self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(AppState { gl_surface, window }) = &self.state {
+            let proj = ortho(
+                window.inner_size().width as f32,
+                window.inner_size().height as f32,
+            );
+
+            let gl_context = self.gl_context.as_ref().unwrap();
+            unsafe {
+                self.text_renderer.as_ref().unwrap().draw_text(
+                    self.gl.as_ref().unwrap(),
+                    "office != affine -> ligatures?",
+                    80.0,
+                    80.0,
+                    48.0,
+                    [1.0, 1.0, 1.0],
+                    &proj,
+                );
+            }
+
+            window.request_redraw();
+            gl_surface.swap_buffers(gl_context).unwrap();
         }
     }
 }
