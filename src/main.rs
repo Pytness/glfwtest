@@ -235,7 +235,10 @@ fn main() {
     let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes()));
 
     let mut app = App::new(template, display_builder);
-    event_loop.run_app(&mut app);
+    match event_loop.run_app(&mut app) {
+        Ok(()) => (),
+        Err(e) => eprintln!("Application error: {e}"),
+    };
 
     // Initialize GLFW
     // Load OpenGL function pointers through GLFW
