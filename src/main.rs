@@ -1,12 +1,13 @@
-mod glyphs;
+mod gl_handler;
 mod macros;
+mod renderer;
+mod renderers;
 
 use std::{ffi::CString, num::NonZeroU32};
 
 use glow::HasContext;
 use glutin::{
-    config::{Config, ConfigTemplateBuilder, GetGlConfig},
-    context::{NotCurrentContext, PossiblyCurrentContext},
+    config::ConfigTemplateBuilder,
     surface::{Surface, WindowSurface},
 };
 
@@ -14,28 +15,24 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
-    raw_window_handle::HasWindowHandle,
     window::{Window, WindowId},
 };
 
-use glutin::{
-    context::{ContextApi, ContextAttributesBuilder, Version},
-    display::GetGlDisplay,
-    prelude::*,
-};
+use glutin::{display::GetGlDisplay, prelude::*};
 
 use glutin_winit::{DisplayBuilder, GlWindow};
-use winit::window::WindowAttributes;
 
-use self::macros::macs::include_font;
+use self::{
+    gl_handler::{GlHandler, window_attributes},
+    macros::macs::include_font,
+};
 
 struct App {
-    template: ConfigTemplateBuilder,
+    gl_handler: GlHandler,
     state: Option<AppState>,
-    gl_display: GlDisplayCreationState,
-    gl_context: Option<PossiblyCurrentContext>,
     gl: Option<glow::Context>,
-    text_renderer: Option<glyphs::TextRenderer>,
+    text_renderer: Option<renderers::TextRenderer>,
+    triangle_renderer: Option<renderers::TriangleRenderer>,
 }
 
 struct AppState {
@@ -46,63 +43,18 @@ struct AppState {
 impl App {
     fn new(template: ConfigTemplateBuilder, display_builder: DisplayBuilder) -> Self {
         Self {
-            template,
+            gl_handler: GlHandler::new(template, display_builder),
             state: None,
-            gl_display: GlDisplayCreationState::Builder(Box::new(display_builder)),
-            gl_context: None,
             gl: None,
             text_renderer: None,
+            triangle_renderer: None,
         }
     }
-
-    fn get_or_create_gl_window(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-    ) -> Option<(Window, Config)> {
-        match &mut self.gl_display {
-            GlDisplayCreationState::Builder(display_builder) => {
-                let (window, gl_config) = match display_builder.clone().build(
-                    event_loop,
-                    self.template.clone(),
-                    gl_config_picker,
-                ) {
-                    Ok((window, gl_config)) => (window.unwrap(), gl_config),
-                    Err(e) => panic!("Failed to build display: {e}"),
-                };
-
-                self.gl_display = GlDisplayCreationState::Init;
-
-                self.gl_context =
-                    Some(create_gl_context(&window, &gl_config).treat_as_possibly_current());
-
-                Some((window, gl_config))
-            }
-            GlDisplayCreationState::Init => {
-                let gl_config = self.gl_context.as_ref().unwrap().config();
-
-                match glutin_winit::finalize_window(event_loop, window_attributes(), &gl_config) {
-                    Ok(window) => Some((window, gl_config)),
-                    Err(_) => {
-                        // self.exit_state = Err(err.into());
-                        event_loop.exit();
-                        None
-                    }
-                }
-            }
-        }
-    }
-}
-
-enum GlDisplayCreationState {
-    /// The display was not build yet.
-    Builder(Box<DisplayBuilder>),
-    /// The display was already created for the application.
-    Init,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let gl_window = self.get_or_create_gl_window(event_loop);
+        let gl_window = self.gl_handler.get_or_create_gl_window(event_loop);
 
         if gl_window.is_none() {
             return;
@@ -121,7 +73,7 @@ impl ApplicationHandler for App {
                 .expect("Failed to create surface")
         };
 
-        let gl_context = self.gl_context.as_ref().unwrap();
+        let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
         gl_context.make_current(&gl_surface).unwrap();
 
         let gl = unsafe {
@@ -141,6 +93,10 @@ impl ApplicationHandler for App {
             )
         });
 
+        self.triangle_renderer.get_or_insert_with(|| unsafe {
+            renderers::TriangleRenderer::new(self.gl.as_ref().unwrap())
+        });
+
         self.state = Some(AppState { gl_surface, window });
     }
 
@@ -156,12 +112,13 @@ impl ApplicationHandler for App {
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
+                println!("Window resized to {}x{}", size.width, size.height);
                 if let Some(AppState {
                     gl_surface,
                     window: _,
                 }) = self.state.as_ref()
                 {
-                    let gl_context = self.gl_context.as_ref().unwrap();
+                    let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
                     gl_surface.resize(
                         gl_context,
                         NonZeroU32::new(size.width).unwrap(),
@@ -174,6 +131,13 @@ impl ApplicationHandler for App {
                             0,
                             size.width as i32,
                             size.height as i32,
+                        );
+
+                        self.triangle_renderer = Some(
+                            self.triangle_renderer
+                                .take()
+                                .unwrap()
+                                .resize(self.gl.as_ref().unwrap()),
                         );
                     }
                 }
@@ -203,17 +167,32 @@ impl ApplicationHandler for App {
                         window.inner_size().height as f32,
                     );
 
-                    let gl_context = self.gl_context.as_ref().unwrap();
+                    let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
+
+                    let triangles_positions = [(0.1, 0.0), (-0.5, -0.5), (0.5, -0.5), (0.0, 0.0)];
+                    let text_positions = [(0.0, 100.0), (0.0, 200.0), (0.0, 300.0), (0.0, 400.0)];
+
                     unsafe {
-                        self.text_renderer.as_ref().unwrap().draw_text(
-                            self.gl.as_ref().unwrap(),
-                            "office != affine -> ligatures?",
-                            80.0,
-                            80.0,
-                            48.0,
-                            [1.0, 1.0, 0.0],
-                            &proj,
-                        );
+                        for point in triangles_positions {
+                            self.triangle_renderer.as_ref().unwrap().render(
+                                self.gl.as_ref().unwrap(),
+                                point,
+                                0.1,
+                                (1.0, 1.0, 1.0),
+                            );
+                        }
+
+                        for point in text_positions {
+                            self.text_renderer.as_ref().unwrap().draw_text(
+                                self.gl.as_ref().unwrap(),
+                                "office != affine -> ligatures?",
+                                point.0,
+                                point.1,
+                                48.0,
+                                [1.0, 1.0, 0.0],
+                                &proj,
+                            );
+                        }
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();
@@ -384,63 +363,4 @@ fn ortho(width: f32, height: f32) -> [f32; 16] {
         0.0, 0.0, -1.0, 0.0,
         -1.0, 1.0, 0.0, 1.0,
     ];
-}
-
-fn window_attributes() -> WindowAttributes {
-    Window::default_attributes()
-        .with_transparent(true)
-        .with_title("Glutin triangle gradient example (press Escape to exit)")
-}
-
-pub fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
-    configs
-        .reduce(|accum, config| {
-            let transparency_check = config.supports_transparency().unwrap_or(false)
-                & !accum.supports_transparency().unwrap_or(false);
-
-            if transparency_check || config.num_samples() > accum.num_samples() {
-                config
-            } else {
-                accum
-            }
-        })
-        .unwrap()
-}
-
-fn create_gl_context(window: &Window, gl_config: &Config) -> NotCurrentContext {
-    let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw());
-
-    // The context creation part.
-    let context_attributes = ContextAttributesBuilder::new().build(raw_window_handle);
-
-    // Since glutin by default tries to create OpenGL core context, which may not be
-    // present we should try gles.
-    let fallback_context_attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::Gles(None))
-        .build(raw_window_handle);
-
-    // There are also some old devices that support neither modern OpenGL nor GLES.
-    // To support these we can try and create a 2.1 context.
-    let legacy_context_attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 1))))
-        .build(raw_window_handle);
-
-    // Reuse the uncurrented context from a suspended() call if it exists, otherwise
-    // this is the first time resumed() is called, where the context still
-    // has to be created.
-    let gl_display = gl_config.display();
-
-    unsafe {
-        gl_display
-            .create_context(gl_config, &context_attributes)
-            .unwrap_or_else(|_| {
-                gl_display
-                    .create_context(gl_config, &fallback_context_attributes)
-                    .unwrap_or_else(|_| {
-                        gl_display
-                            .create_context(gl_config, &legacy_context_attributes)
-                            .expect("failed to create context")
-                    })
-            })
-    }
 }
