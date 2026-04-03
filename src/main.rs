@@ -197,33 +197,30 @@ impl ApplicationHandler for App {
                 // applications which do not always need to. Applications that redraw continuously
                 // can render here instead.
                 // self.window.as_ref().unwrap().request_redraw();
+                if let Some(AppState { gl_surface, window }) = &self.state {
+                    let proj = ortho(
+                        window.inner_size().width as f32,
+                        window.inner_size().height as f32,
+                    );
+
+                    let gl_context = self.gl_context.as_ref().unwrap();
+                    unsafe {
+                        self.text_renderer.as_ref().unwrap().draw_text(
+                            self.gl.as_ref().unwrap(),
+                            "office != affine -> ligatures?",
+                            80.0,
+                            80.0,
+                            48.0,
+                            [1.0, 1.0, 0.0],
+                            &proj,
+                        );
+                    }
+
+                    gl_surface.swap_buffers(gl_context).unwrap();
+                    window.request_redraw();
+                }
             }
             _ => (),
-        }
-    }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(AppState { gl_surface, window }) = &self.state {
-            let proj = ortho(
-                window.inner_size().width as f32,
-                window.inner_size().height as f32,
-            );
-
-            let gl_context = self.gl_context.as_ref().unwrap();
-            unsafe {
-                self.text_renderer.as_ref().unwrap().draw_text(
-                    self.gl.as_ref().unwrap(),
-                    "office != affine -> ligatures?",
-                    80.0,
-                    80.0,
-                    48.0,
-                    [1.0, 1.0, 1.0],
-                    &proj,
-                );
-            }
-
-            window.request_redraw();
-            gl_surface.swap_buffers(gl_context).unwrap();
         }
     }
 }
