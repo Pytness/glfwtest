@@ -1,191 +1,287 @@
 mod glyphs;
 mod macros;
+// mod temp;
 
-use freetype::face::LoadFlag;
-use glfw::{Action, Context as _, InitHint, Key, Platform, WindowEvent, WindowHint, WindowMode};
+use std::{ffi::CString, num::NonZeroU32};
+
+use glfw::{Action, InitHint, Key, Platform, WindowHint, WindowMode};
 use glow::{HasContext, NativeTexture};
+use glutin::{
+    config::{Config, ConfigTemplateBuilder, GetGlConfig},
+    context::{NotCurrentContext, PossiblyCurrentContext},
+};
+
+use winit::{
+    application::ApplicationHandler,
+    event::{Event, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    raw_window_handle::HasWindowHandle,
+    window::{Window, WindowId},
+};
 
 use self::glyphs::TextRenderer;
 use self::macros::macs::{include_font, include_shader};
+use glutin::{
+    context::{ContextApi, ContextAttributesBuilder, Version},
+    display::{DisplayApiPreference, GetGlDisplay},
+    prelude::*,
+    surface::{SurfaceAttributesBuilder, WindowSurface},
+};
+
+use glutin_winit::{DisplayBuilder, GlWindow};
+use winit::window::WindowAttributes;
+
+struct App {
+    template: ConfigTemplateBuilder,
+    state: Option<AppState>,
+    gl_display: GlDisplayCreationState,
+    gl_context: Option<PossiblyCurrentContext>,
+}
+
+struct AppState {
+    // gl_surface: Surface<WindowSurface>,
+    window: Window,
+}
+
+struct Renderer {
+    gl: glow::Context,
+}
+
+impl Renderer {
+    fn new<D: GlDisplay>(gl_display: &D) -> Self {
+        let gl = unsafe {
+            glow::Context::from_loader_function(|s| {
+                let symbol = CString::new(s).unwrap();
+                gl_display.get_proc_address(symbol.as_c_str())
+            })
+        };
+
+        Self { gl }
+    }
+}
+
+impl App {
+    fn new(template: ConfigTemplateBuilder, display_builder: DisplayBuilder) -> Self {
+        Self {
+            template,
+            state: None,
+            gl_display: GlDisplayCreationState::Builder(Box::new(display_builder)),
+            gl_context: None,
+        }
+    }
+}
+
+enum GlDisplayCreationState {
+    /// The display was not build yet.
+    Builder(Box<DisplayBuilder>),
+    /// The display was already created for the application.
+    Init,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let (window, gl_config) = match &mut self.gl_display {
+            GlDisplayCreationState::Builder(display_builder) => {
+                let (window, gl_config) = match display_builder.clone().build(
+                    event_loop,
+                    self.template.clone(),
+                    gl_config_picker,
+                ) {
+                    Ok((window, gl_config)) => (window.unwrap(), gl_config),
+                    Err(e) => panic!("Failed to build display: {e}"),
+                };
+
+                self.gl_display = GlDisplayCreationState::Init;
+
+                self.gl_context =
+                    Some(create_gl_context(&window, &gl_config).treat_as_possibly_current());
+
+                (window, gl_config)
+            }
+            GlDisplayCreationState::Init => {
+                todo!()
+            }
+        };
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                println!("The close button was pressed; stopping");
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                // Redraw the application.
+                //
+                // It's preferable for applications that do not render continuously to render in
+                // this event rather than in AboutToWait, since rendering in here allows
+                // the program to gracefully handle redraws requested by the OS.
+
+                // Draw.
+
+                // Queue a RedrawRequested event.
+                //
+                // You only need to call this if you've determined that you need to redraw in
+                // applications which do not always need to. Applications that redraw continuously
+                // can render here instead.
+                // self.window.as_ref().unwrap().request_redraw();
+            }
+            _ => (),
+        }
+    }
+}
 
 fn main() {
+    let event_loop = EventLoop::new().unwrap();
+
+    let template = ConfigTemplateBuilder::new()
+        .with_alpha_size(8)
+        .with_transparency(true);
+
+    let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes()));
+
+    let mut app = App::new(template, display_builder);
+    event_loop.run_app(&mut app);
+
     // Initialize GLFW
-    let mut glfw = glfw::init(glfw::fail_on_errors).expect("Failed to init GLFW");
-
-    // Request an OpenGL 3.3 Core context
-    glfw.window_hint(WindowHint::ContextVersion(3, 3));
-    glfw.window_hint(WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
-    glfw.window_hint(WindowHint::TransparentFramebuffer(true));
-
-    let (mut window, events) = glfw
-        .create_window(800, 600, "GLFW", WindowMode::Windowed)
-        .expect("Failed to create window");
-
-    window.make_current();
-    window.set_key_polling(true);
-    window.set_framebuffer_size_polling(true);
-
     // Load OpenGL function pointers through GLFW
-    let gl = unsafe {
-        glow::Context::from_loader_function(|s| {
-            window
-                .get_proc_address(s)
-                .map_or(std::ptr::null(), |p| p as *const _)
-        })
-    };
 
     // Simple triangle data: position (x, y, z) + color (r, g, b)
-    #[rustfmt::skip]
-    let vertices: [f32; 18] = [
-        // x,    y,   z,   r,   g,   b
-         0.0,  0.5, 0.0, 1.0, 0.0, 0.0,
-        -0.5, -0.5, 0.0, 0.0, 1.0, 0.0,
-         0.5, -0.5, 0.0, 0.0, 0.0, 1.0,
-    ];
+    // #[rustfmt::skip]
+    // let vertices: [f32; 18] = [
+    //     // x,    y,   z,   r,   g,   b
+    //      0.0,  0.5, 0.0, 1.0, 0.0, 0.0,
+    //     -0.5, -0.5, 0.0, 0.0, 1.0, 0.0,
+    //      0.5, -0.5, 0.0, 0.0, 0.0, 1.0,
+    // ];
+    //
+    // let font_bytes = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
+    // let font_size = 48.0;
+    //
+    // let mut text_renderer = unsafe { TextRenderer::new(&gl, font_bytes, font_size as u32) };
+    //
+    // let cache_width: u32 = 1024;
+    // let cache_height: u32 = 1024;
+    //
+    // let font_texture = unsafe { gl.create_texture().unwrap() };
+    //
+    // let text = "fi != -> ===";
+    //
+    // let triangle_program = unsafe { include_shader!(gl, "triangle") };
+    // let font_program = unsafe { include_shader!(gl, "font") };
+    // let vao = unsafe { gl.create_vertex_array().expect("Cannot create VAO") };
+    // let vbo = unsafe { gl.create_buffer().expect("Cannot create VBO") };
+    // let font_vao = unsafe { gl.create_vertex_array().expect("Cannot create VAO") };
+    // let font_vbo = unsafe { gl.create_buffer().expect("Cannot create VBO") };
+    //
+    // unsafe {
+    //     gl.bind_vertex_array(Some(vao));
+    //     gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+    //
+    //     let vertex_bytes = std::slice::from_raw_parts(
+    //         vertices.as_ptr() as *const u8,
+    //         vertices.len() * std::mem::size_of::<f32>(),
+    //     );
+    //
+    //     gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertex_bytes, glow::STATIC_DRAW);
+    //
+    //     let stride = 6 * std::mem::size_of::<f32>() as i32;
+    //
+    //     // location = 0 -> vec3 position
+    //     gl.enable_vertex_attrib_array(0);
+    //     gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+    //
+    //     // location = 1 -> vec3 color
+    //     gl.enable_vertex_attrib_array(1);
+    //     gl.vertex_attrib_pointer_f32(
+    //         1,
+    //         3,
+    //         glow::FLOAT,
+    //         false,
+    //         stride,
+    //         3 * std::mem::size_of::<f32>() as i32,
+    //     );
+    //
+    //     gl.bind_buffer(glow::ARRAY_BUFFER, None);
+    //     gl.bind_vertex_array(None);
+    //
+    //     gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
+    //     gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 0, 0);
+    //     gl.enable_vertex_attrib_array(0);
+    //
+    //     // uv buffer
+    //     gl.bind_vertex_array(Some(font_vao));
+    //     gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
+    //
+    //     gl.enable_vertex_attrib_array(0);
+    //     gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
+    //
+    //     gl.enable_vertex_attrib_array(1);
+    //     gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
+    //
+    //     gl.bind_vertex_array(None);
+    // }
+    //
+    // let proj_loc = unsafe { gl.get_uniform_location(font_program, "u_proj") };
+    // let text_color_loc = unsafe { gl.get_uniform_location(font_program, "u_text_color") };
+    //
+    // let mut start_point: f32 = 0.0;
 
-    let font_bytes = include_font!("CaskaydiaCoveNerdFont-Regular.ttf");
-    let font_size = 48.0;
+    // while !window.should_close() {
+    //     let window_size = window.get_framebuffer_size();
+    //
+    //     for (_, event) in glfw::flush_messages(&events) {
+    //         match event {
+    //             WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+    //                 window.set_should_close(true);
+    //             }
+    //             WindowEvent::FramebufferSize(width, height) => unsafe {
+    //                 gl.viewport(0, 0, width, height);
+    //             },
+    //             _ => {}
+    //         }
+    //     }
+    //
+    //     unsafe {
+    //         let proj = ortho(
+    //             window.get_framebuffer_size().0 as f32,
+    //             window.get_framebuffer_size().1 as f32,
+    //         );
+    //
+    //         gl.clear_color(0.0, 0.0, 0.0, 0.0);
+    //         gl.clear(glow::COLOR_BUFFER_BIT);
+    //
+    //         gl.use_program(Some(triangle_program));
+    //         gl.bind_vertex_array(Some(vao));
+    //         gl.draw_arrays(glow::TRIANGLES, 0, 3);
+    //
+    //         text_renderer.draw_text(
+    //             &gl,
+    //             "office != affine -> ligatures?",
+    //             start_point,
+    //             80.0,
+    //             font_size,
+    //             [1.0, 1.0, 1.0],
+    //             &proj,
+    //         );
+    //     }
+    //
+    //     window.swap_buffers();
+    //
+    //     start_point += 0.1;
+    //     glfw.wait_events();
+    // }
 
-    let mut text_renderer = unsafe { TextRenderer::new(&gl, font_bytes, font_size as u32) };
-
-    let cache_width: u32 = 1024;
-    let cache_height: u32 = 1024;
-
-    let font_texture = unsafe { gl.create_texture().unwrap() };
-
-    let text = "fi != -> ===";
-
-    let triangle_program = unsafe { include_shader!(gl, "triangle") };
-    let font_program = unsafe { include_shader!(gl, "font") };
-    let vao = unsafe { gl.create_vertex_array().expect("Cannot create VAO") };
-    let vbo = unsafe { gl.create_buffer().expect("Cannot create VBO") };
-    let font_vao = unsafe { gl.create_vertex_array().expect("Cannot create VAO") };
-    let font_vbo = unsafe { gl.create_buffer().expect("Cannot create VBO") };
-
-    unsafe {
-        gl.bind_vertex_array(Some(vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-
-        let vertex_bytes = std::slice::from_raw_parts(
-            vertices.as_ptr() as *const u8,
-            vertices.len() * std::mem::size_of::<f32>(),
-        );
-
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertex_bytes, glow::STATIC_DRAW);
-
-        let stride = 6 * std::mem::size_of::<f32>() as i32;
-
-        // location = 0 -> vec3 position
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
-
-        // location = 1 -> vec3 color
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(
-            1,
-            3,
-            glow::FLOAT,
-            false,
-            stride,
-            3 * std::mem::size_of::<f32>() as i32,
-        );
-
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        gl.bind_vertex_array(None);
-
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
-        gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 0, 0);
-        gl.enable_vertex_attrib_array(0);
-
-        // uv buffer
-        gl.bind_vertex_array(Some(font_vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
-
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
-
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
-
-        gl.bind_vertex_array(None);
-    }
-
-    let proj_loc = unsafe { gl.get_uniform_location(font_program, "u_proj") };
-    let text_color_loc = unsafe { gl.get_uniform_location(font_program, "u_text_color") };
-
-    let mut start_point: f32 = 0.0;
-
-    while !window.should_close() {
-        let window_size = window.get_framebuffer_size();
-
-        glfw.wait_events_timeout(0.01);
-
-        for (_, event) in glfw::flush_messages(&events) {
-            match event {
-                WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                    window.set_should_close(true);
-                }
-                WindowEvent::FramebufferSize(width, height) => unsafe {
-                    gl.viewport(0, 0, width, height);
-                },
-                _ => {}
-            }
-        }
-
-        unsafe {
-            let proj = ortho(
-                window.get_framebuffer_size().0 as f32,
-                window.get_framebuffer_size().1 as f32,
-            );
-
-            gl.clear_color(0.0, 0.0, 0.0, 0.0);
-            gl.clear(glow::COLOR_BUFFER_BIT);
-
-            gl.use_program(Some(triangle_program));
-            gl.bind_vertex_array(Some(vao));
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-
-            // gl.use_program(Some(font_program));
-            // gl.enable(glow::BLEND);
-            // gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-            // gl.bind_buffer(glow::ARRAY_BUFFER, Some(font_vbo));
-            // gl.buffer_data_u8_slice(
-            //     glow::ARRAY_BUFFER,
-            //     bytemuck::cast_slice(&font_vertices),
-            //     glow::DYNAMIC_DRAW,
-            // );
-            // gl.uniform_matrix_4_f32_slice(proj_loc.as_ref(), false, &proj);
-            // gl.uniform_3_f32(text_color_loc.as_ref(), 1.0, 0.0, 1.0);
-            //
-            // gl.bind_vertex_array(Some(font_vao));
-            //
-            // gl.active_texture(glow::TEXTURE0);
-            // gl.bind_texture(glow::TEXTURE_2D, Some(font_texture));
-            //
-            // gl.draw_arrays(glow::TRIANGLES, 0, font_vertices.len() as i32);
-
-            text_renderer.draw_text(
-                &gl,
-                "office != affine -> ligatures?",
-                start_point,
-                80.0,
-                font_size,
-                [1.0, 1.0, 1.0],
-                &proj,
-            );
-        }
-
-        window.swap_buffers();
-
-        start_point += 0.1;
-        glfw.wait_events();
-    }
-
-    unsafe {
-        gl.delete_buffer(vbo);
-        gl.delete_vertex_array(vao);
-        gl.delete_program(triangle_program);
-    }
+    // unsafe {
+    //     gl.delete_buffer(vbo);
+    //     gl.delete_vertex_array(vao);
+    //     gl.delete_program(triangle_program);
+    // }
 }
 
 fn ortho(width: f32, height: f32) -> [f32; 16] {
@@ -198,121 +294,61 @@ fn ortho(width: f32, height: f32) -> [f32; 16] {
     ];
 }
 
-// fn build_font_cache(
-//     gl: &glow::Context,
-//     texture: NativeTexture,
-//     cache_width: u32,
-//     cache_height: u32,
-// ) -> Cache<'_> {
-//     unsafe {
-//         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-//         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-//         gl.tex_image_2d(
-//             glow::TEXTURE_2D,
-//             0,
-//             glow::R8 as i32,
-//             cache_width as i32,
-//             cache_height as i32,
-//             0,
-//             glow::RED,
-//             glow::UNSIGNED_BYTE,
-//             glow::PixelUnpackData::Slice(Some(&vec![0u8; (cache_width * cache_height) as usize])),
-//         );
-//
-//         gl.tex_parameter_i32(
-//             glow::TEXTURE_2D,
-//             glow::TEXTURE_MIN_FILTER,
-//             glow::LINEAR as i32,
-//         );
-//         gl.tex_parameter_i32(
-//             glow::TEXTURE_2D,
-//             glow::TEXTURE_MAG_FILTER,
-//             glow::LINEAR as i32,
-//         );
-//         gl.tex_parameter_i32(
-//             glow::TEXTURE_2D,
-//             glow::TEXTURE_WRAP_S,
-//             glow::CLAMP_TO_EDGE as i32,
-//         );
-//         gl.tex_parameter_i32(
-//             glow::TEXTURE_2D,
-//             glow::TEXTURE_WRAP_T,
-//             glow::CLAMP_TO_EDGE as i32,
-//         );
-//     }
-//
-//     Cache::builder()
-//         .dimensions(cache_width, cache_height)
-//         .build()
-// }
+fn window_attributes() -> WindowAttributes {
+    Window::default_attributes()
+        .with_transparent(true)
+        .with_title("Glutin triangle gradient example (press Escape to exit)")
+}
 
-// fn cache_glyphs<'a>(
-//     gl: &glow::Context,
-//     cache: &mut Cache<'a>,
-//     texture: NativeTexture,
-//     glyphs: &[PositionedGlyph<'a>],
-// ) {
-//     for glyph in glyphs {
-//         cache.queue_glyph(0, glyph.clone());
-//     }
-//
-//     cache
-//         .cache_queued(|rect, data| unsafe {
-//             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-//             gl.tex_sub_image_2d(
-//                 glow::TEXTURE_2D,
-//                 0,
-//                 rect.min.x as i32,
-//                 rect.min.y as i32,
-//                 rect.width() as i32,
-//                 rect.height() as i32,
-//                 glow::RED,
-//                 glow::UNSIGNED_BYTE,
-//                 glow::PixelUnpackData::Slice(Some(data)),
-//             );
-//         })
-//         .unwrap();
-// }
-//
-// fn get_glyph_rect<'a>(cache: &Cache<'a>, glyph: &PositionedGlyph<'a>) -> Option<[Vertex; 6]> {
-//     if let Ok(Some((uv_rect, screen_rect))) = cache.rect_for(0, glyph) {
-//         let x0 = screen_rect.min.x as f32;
-//         let y0 = screen_rect.min.y as f32;
-//         let x1 = screen_rect.max.x as f32;
-//         let y1 = screen_rect.max.y as f32;
-//
-//         let u0 = uv_rect.min.x;
-//         let v0 = uv_rect.min.y;
-//         let u1 = uv_rect.max.x;
-//         let v1 = uv_rect.max.y;
-//
-//         Some([
-//             Vertex {
-//                 pos: [x0, y0],
-//                 uv: [u0, v0],
-//             },
-//             Vertex {
-//                 pos: [x1, y0],
-//                 uv: [u1, v0],
-//             },
-//             Vertex {
-//                 pos: [x1, y1],
-//                 uv: [u1, v1],
-//             },
-//             Vertex {
-//                 pos: [x0, y0],
-//                 uv: [u0, v0],
-//             },
-//             Vertex {
-//                 pos: [x1, y1],
-//                 uv: [u1, v1],
-//             },
-//             Vertex {
-//                 pos: [x0, y1],
-//                 uv: [u0, v1],
-//             },
-//         ])
-//     } else {
-//         None
-//     }
-// }
+pub fn gl_config_picker(configs: Box<dyn Iterator<Item = Config> + '_>) -> Config {
+    configs
+        .reduce(|accum, config| {
+            let transparency_check = config.supports_transparency().unwrap_or(false)
+                & !accum.supports_transparency().unwrap_or(false);
+
+            if transparency_check || config.num_samples() > accum.num_samples() {
+                config
+            } else {
+                accum
+            }
+        })
+        .unwrap()
+}
+
+fn create_gl_context(window: &Window, gl_config: &Config) -> NotCurrentContext {
+    let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw());
+
+    // The context creation part.
+    let context_attributes = ContextAttributesBuilder::new().build(raw_window_handle);
+
+    // Since glutin by default tries to create OpenGL core context, which may not be
+    // present we should try gles.
+    let fallback_context_attributes = ContextAttributesBuilder::new()
+        .with_context_api(ContextApi::Gles(None))
+        .build(raw_window_handle);
+
+    // There are also some old devices that support neither modern OpenGL nor GLES.
+    // To support these we can try and create a 2.1 context.
+    let legacy_context_attributes = ContextAttributesBuilder::new()
+        .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 1))))
+        .build(raw_window_handle);
+
+    // Reuse the uncurrented context from a suspended() call if it exists, otherwise
+    // this is the first time resumed() is called, where the context still
+    // has to be created.
+    let gl_display = gl_config.display();
+
+    unsafe {
+        gl_display
+            .create_context(gl_config, &context_attributes)
+            .unwrap_or_else(|_| {
+                gl_display
+                    .create_context(gl_config, &fallback_context_attributes)
+                    .unwrap_or_else(|_| {
+                        gl_display
+                            .create_context(gl_config, &legacy_context_attributes)
+                            .expect("failed to create context")
+                    })
+            })
+    }
+}
