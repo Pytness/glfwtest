@@ -43,23 +43,6 @@ struct AppState {
     window: Window,
 }
 
-struct Renderer {
-    gl: glow::Context,
-}
-
-impl Renderer {
-    fn new<D: GlDisplay>(gl_display: &D) -> Self {
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| {
-                let symbol = CString::new(s).unwrap();
-                gl_display.get_proc_address(symbol.as_c_str())
-            })
-        };
-
-        Self { gl }
-    }
-}
-
 impl App {
     fn new(template: ConfigTemplateBuilder, display_builder: DisplayBuilder) -> Self {
         Self {
