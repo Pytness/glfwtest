@@ -1,26 +1,35 @@
+use std::rc::Rc;
+
 use glow::HasContext;
 
 use crate::macros::macs::include_shader;
 
 pub struct TriangleRenderer {
+    gl: Rc<glow::Context>,
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
     vbo: glow::NativeBuffer,
 }
 
 impl TriangleRenderer {
-    pub unsafe fn new(gl: &glow::Context) -> Self {
+    pub unsafe fn new(gl: Rc<glow::Context>) -> Self {
         unsafe {
             let program = include_shader!(gl, "triangle");
             let vao = gl.create_vertex_array().expect("Cannot create VAO");
             let vbo = gl.create_buffer().expect("Cannot create VBO");
 
-            Self { program, vao, vbo }
+            Self {
+                gl,
+                program,
+                vao,
+                vbo,
+            }
         }
     }
 
-    pub unsafe fn resize(self, gl: &glow::Context) -> Self {
+    pub unsafe fn resize(self) -> Self {
         unsafe {
+            let gl = &self.gl;
             gl.delete_buffer(self.vbo);
             gl.delete_vertex_array(self.vao);
 
@@ -28,6 +37,7 @@ impl TriangleRenderer {
             let vbo = gl.create_buffer().expect("Cannot create VBO");
 
             Self {
+                gl: self.gl,
                 program: self.program,
                 vao,
                 vbo,
@@ -90,6 +100,16 @@ impl TriangleRenderer {
 
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.bind_vertex_array(None);
+        }
+    }
+}
+
+impl Drop for TriangleRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            self.gl.delete_buffer(self.vbo);
+            self.gl.delete_vertex_array(self.vao);
+            self.gl.delete_program(self.program);
         }
     }
 }

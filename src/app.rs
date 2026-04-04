@@ -1,4 +1,4 @@
-use std::{ffi::CString, num::NonZeroU32};
+use std::{ffi::CString, num::NonZeroU32, rc::Rc};
 
 use glow::HasContext;
 use glutin::{
@@ -17,15 +17,15 @@ use glutin::{display::GetGlDisplay, prelude::*};
 
 use glutin_winit::{DisplayBuilder, GlWindow};
 
-use crate::renderers;
+use crate::renderers::{self, TextRenderer};
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 pub struct App {
     gl_handler: GlHandler,
     state: Option<AppState>,
-    gl: Option<glow::Context>,
-    text_renderer: Option<renderers::TextRenderer>,
+    gl: Option<Rc<glow::Context>>,
+    text_renderer: Option<TextRenderer>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
 }
 
@@ -77,18 +77,20 @@ impl ApplicationHandler for App {
             })
         };
 
-        self.gl = Some(gl);
+        self.gl = Some(Rc::new(gl));
 
-        self.text_renderer.get_or_insert_with(|| unsafe {
-            renderers::TextRenderer::new(
-                self.gl.as_ref().unwrap(),
-                include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
-                48,
-            )
-        });
+        unsafe {
+            self.text_renderer.get_or_insert_with(|| {
+                TextRenderer::new(
+                    self.gl.as_ref().unwrap().clone(),
+                    include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
+                    48,
+                )
+            });
+        }
 
         self.triangle_renderer.get_or_insert_with(|| unsafe {
-            renderers::TriangleRenderer::new(self.gl.as_ref().unwrap())
+            renderers::TriangleRenderer::new(self.gl.as_ref().unwrap().clone())
         });
 
         self.state = Some(AppState { gl_surface, window });
@@ -127,12 +129,8 @@ impl ApplicationHandler for App {
                             size.height as i32,
                         );
 
-                        self.triangle_renderer = Some(
-                            self.triangle_renderer
-                                .take()
-                                .unwrap()
-                                .resize(self.gl.as_ref().unwrap()),
-                        );
+                        self.triangle_renderer =
+                            Some(self.triangle_renderer.take().unwrap().resize());
                     }
                 }
             }
@@ -178,7 +176,6 @@ impl ApplicationHandler for App {
 
                         for point in text_positions {
                             self.text_renderer.as_ref().unwrap().draw_text(
-                                self.gl.as_ref().unwrap(),
                                 "office != affine -> ligatures?",
                                 point.0,
                                 point.1,

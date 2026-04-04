@@ -3,6 +3,7 @@ use glow::HasContext;
 use rustybuzz::{Face as RbFace, UnicodeBuffer};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::macros::macs::include_shader;
 
@@ -49,6 +50,7 @@ pub struct GlyphTexture {
 }
 
 pub struct TextRenderer {
+    gl: Rc<glow::Context>,
     ft_lib: Library,
     ft_face: freetype::Face,
     rb_face: RbFace<'static>,
@@ -68,7 +70,7 @@ impl TextRenderer {
     pub fn units_per_em(&self) -> f32 {
         self.rb_face.units_per_em() as f32
     }
-    pub unsafe fn new(gl: &glow::Context, font_bytes: &[u8], px_size: u32) -> Self {
+    pub unsafe fn new(gl: Rc<glow::Context>, font_bytes: &[u8], px_size: u32) -> Self {
         unsafe {
             // rustybuzz face from raw bytes
             // leak for simplicity in this minimal example
@@ -97,6 +99,7 @@ impl TextRenderer {
             let u_tex = gl.get_uniform_location(program, "u_tex");
 
             Self {
+                gl,
                 ft_lib,
                 ft_face,
                 rb_face,
@@ -134,11 +137,7 @@ impl TextRenderer {
             .collect()
     }
 
-    pub unsafe fn get_or_create_glyph(
-        &self,
-        gl: &glow::Context,
-        glyph_id: u16,
-    ) -> Option<&GlyphTexture> {
+    pub unsafe fn get_or_create_glyph(&self, glyph_id: u16) -> Option<&GlyphTexture> {
         if !self.glyphs.borrow().contains_key(&glyph_id) {
             self.ft_face
                 .load_glyph(glyph_id as u32, LoadFlag::RENDER)
@@ -152,6 +151,8 @@ impl TextRenderer {
             let left = slot.bitmap_left();
             let top = slot.bitmap_top();
             let advance_x = (slot.advance().x >> 6) as i32;
+
+            let gl = self.gl.as_ref();
 
             unsafe {
                 let tex = gl.create_texture().unwrap();
@@ -220,7 +221,6 @@ impl TextRenderer {
 
     pub unsafe fn draw_text(
         &self,
-        gl: &glow::Context,
         text: &str,
         mut pen_x: f32,
         baseline_y: f32,
@@ -230,6 +230,8 @@ impl TextRenderer {
     ) {
         let shaped = self.shape_text(text);
         let units_per_em = self.units_per_em();
+
+        let gl = self.gl.as_ref();
 
         unsafe {
             gl.bind_vertex_array(Some(self.vao));
@@ -253,7 +255,7 @@ impl TextRenderer {
 
             for g in shaped {
                 let glyph = self
-                    .get_or_create_glyph(gl, g.glyph_id.0 as u16)
+                    .get_or_create_glyph(g.glyph_id.0 as u16)
                     .expect("failed to get or create glyph");
 
                 let x_offset = hb_to_px(g.x_offset, px_size, units_per_em);
@@ -312,6 +314,22 @@ impl TextRenderer {
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.use_program(None);
+        }
+    }
+}
+
+impl Drop for TextRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            let gl = self.gl.as_ref();
+
+            for glyph in self.glyphs.borrow().values() {
+                gl.delete_texture(glyph.tex);
+            }
+
+            gl.delete_vertex_array(self.vao);
+            gl.delete_buffer(self.vbo);
+            gl.delete_program(self.program);
         }
     }
 }
