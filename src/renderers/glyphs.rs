@@ -51,7 +51,6 @@ pub struct GlyphTexture {
 
 pub struct TextRenderer {
     gl: Rc<glow::Context>,
-    ft_lib: Library,
     ft_face: freetype::Face,
     rb_face: RbFace<'static>,
 
@@ -114,7 +113,6 @@ impl TextRenderer {
 
             Self {
                 gl,
-                ft_lib,
                 ft_face,
                 rb_face,
                 glyphs: RefCell::new(HashMap::new()),

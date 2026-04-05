@@ -31,14 +31,11 @@ pub struct App {
     gl_handler: GlHandler,
     state: Option<AppState>,
     gl: Option<Rc<glow::Context>>,
-    framebuffer: Option<glow::Framebuffer>,
-    framebuffer_texture: Option<glow::NativeTexture>,
     text_renderer: Option<TextRenderer>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
     text_manager: Option<TextManager>,
     text_index: usize,
-    text: String,
 }
 
 struct AppState {
@@ -52,14 +49,11 @@ impl App {
             gl_handler: GlHandler::new(template, display_builder),
             state: None,
             gl: None,
-            framebuffer: None,
             text_renderer: None,
             triangle_renderer: None,
-            framebuffer_texture: None,
             quad_renderer: None,
             text_manager: None,
             text_index: 0,
-            text: String::new(),
         }
     }
 
@@ -250,7 +244,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput {
-                device_id,
+                device_id: _device_id,
                 state,
                 button,
             } => {
@@ -260,7 +254,6 @@ impl ApplicationHandler for App {
                     let window = &self.state.as_ref().unwrap().window;
 
                     if self.text_index < TEXT.len() {
-                        let font_size = self.text_renderer.as_ref().unwrap().font_size();
                         let text_manager = self.text_manager.as_ref().unwrap();
 
                         let cell_position =
