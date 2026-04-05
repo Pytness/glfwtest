@@ -11,10 +11,10 @@ pub struct CellBox {
 }
 
 pub struct TextManager {
-    font_width: i32,
-    font_height: i32,
-    rows: i32,
-    cols: i32,
+    pub font_width: i32,
+    pub font_height: i32,
+    pub rows: i32,
+    pub cols: i32,
 }
 
 impl TextManager {
