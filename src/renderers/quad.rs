@@ -157,6 +157,7 @@ impl Drop for QuadRenderer {
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_framebuffer(self.fbo);
             self.gl.delete_framebuffer(self.fbo);
+            self.gl.delete_texture(self.color_tex);
         }
     }
 }
