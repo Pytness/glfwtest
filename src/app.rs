@@ -188,6 +188,25 @@ impl ApplicationHandler for App {
                         self.gl()
                             .viewport(0, 0, size.width as i32, size.height as i32);
                         let proj = ortho(size.width as f32, size.height as f32);
+
+                        for i in 0..self.text_index {
+                            let cell_position = self
+                                .text_manager
+                                .as_ref()
+                                .unwrap()
+                                .get_cell_position(0, i as i32);
+
+                            self.quad_renderer.as_ref().unwrap().with(|| {
+                                self.text_renderer.as_ref().unwrap().draw_text(
+                                    &TEXT[i..i + 1],
+                                    cell_position.x as f32,
+                                    cell_position.y as f32,
+                                    FONT_SIZE as f32,
+                                    [1.0, 1.0, 1.0],
+                                    &proj,
+                                );
+                            });
+                        }
                     }
                 }
             }
