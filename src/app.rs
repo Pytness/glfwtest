@@ -146,7 +146,6 @@ impl ApplicationHandler for App {
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
-                return;
                 if let Some(AppState {
                     gl_surface,
                     window: _,
