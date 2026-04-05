@@ -8,7 +8,6 @@ pub struct QuadRenderer {
     gl: Rc<glow::Context>,
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
-    vbo: glow::NativeBuffer,
     fbo: glow::NativeFramebuffer,
     color_tex: glow::NativeTexture,
 }
@@ -58,6 +57,7 @@ impl QuadRenderer {
             );
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.bind_vertex_array(None);
+            gl.delete_buffer(vbo);
 
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.bind_texture(glow::TEXTURE_2D, Some(color_tex));
@@ -96,7 +96,6 @@ impl QuadRenderer {
                 gl,
                 program,
                 vao,
-                vbo,
                 fbo,
                 color_tex,
             }
