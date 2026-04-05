@@ -25,7 +25,7 @@ use crate::{
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 const FONT_SIZE: u32 = 32;
-const TEXT: &str = "abcd efgh ijkl mnop qrst uvwx yz 0123 4567 89";
+const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 
 pub struct App {
     gl_handler: GlHandler,
@@ -38,6 +38,7 @@ pub struct App {
     quad_renderer: Option<renderers::QuadRenderer>,
     text_manager: Option<TextManager>,
     text_index: usize,
+    text: String,
 }
 
 struct AppState {
@@ -58,6 +59,7 @@ impl App {
             quad_renderer: None,
             text_manager: None,
             text_index: 0,
+            text: String::new(),
         }
     }
 
@@ -129,16 +131,6 @@ impl ApplicationHandler for App {
             )
         });
 
-        // if self.text_index > 0 {
-        //     self.text_renderer.as_ref().unwrap().render_text(
-        //         TEXT,
-        //         0,
-        //         0,
-        //         self.text_index as i32,
-        //         (1.0, 1.0, 1.0),
-        //     );
-        // }
-
         self.state = Some(AppState { gl_surface, window });
     }
 
@@ -154,7 +146,7 @@ impl ApplicationHandler for App {
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
-                println!("Window resized to {}x{}", size.width, size.height);
+                return;
                 if let Some(AppState {
                     gl_surface,
                     window: _,
@@ -170,14 +162,12 @@ impl ApplicationHandler for App {
                     unsafe {
                         let font_size = self.text_renderer.as_ref().unwrap().font_size();
 
-                        self.text_manager.get_or_insert_with(|| {
-                            TextManager::new(
-                                font_size.0 as i32,
-                                font_size.1 as i32,
-                                size.width as i32,
-                                size.height as i32,
-                            )
-                        });
+                        self.text_manager = Some(TextManager::new(
+                            font_size.0 as i32,
+                            font_size.1 as i32,
+                            size.width as i32,
+                            size.height as i32,
+                        ));
 
                         self.quad_renderer = Some(renderers::QuadRenderer::new(
                             self.gl.as_ref().unwrap().clone(),
@@ -189,36 +179,51 @@ impl ApplicationHandler for App {
                             .viewport(0, 0, size.width as i32, size.height as i32);
                         let proj = ortho(size.width as f32, size.height as f32);
 
-                        for i in 0..self.text_index {
-                            let cell_position = self
-                                .text_manager
-                                .as_ref()
-                                .unwrap()
-                                .get_cell_position(0, i as i32);
+                        let text_manager = self.text_manager.as_ref().unwrap();
 
-                            self.quad_renderer.as_ref().unwrap().with(|| {
-                                self.text_renderer.as_ref().unwrap().draw_text(
-                                    &TEXT[i..i + 1],
-                                    cell_position.x as f32,
-                                    cell_position.y as f32,
-                                    FONT_SIZE as f32,
-                                    [1.0, 1.0, 1.0],
-                                    &proj,
-                                );
-                            });
-                        }
+                        self.quad_renderer.as_ref().unwrap().with(|| {
+                            let mut index = 0;
+
+                            for row in 0..text_manager.rows {
+                                let mut col = 0;
+
+                                while col <= text_manager.cols as usize {
+                                    let text_size =
+                                        (TEXT.len() - index).min(text_manager.cols as usize - col);
+                                    if text_size == 0 {
+                                        break;
+                                    }
+
+                                    let cell_position =
+                                        text_manager.get_cell_position(row, col as i32);
+
+                                    self.text_renderer.as_ref().unwrap().draw_text(
+                                        &TEXT[index..index + text_size],
+                                        cell_position.x as f32,
+                                        cell_position.y as f32,
+                                        FONT_SIZE as f32,
+                                        [1.0, 1.0, 1.0],
+                                        &proj,
+                                    );
+
+                                    col += text_size;
+                                    index += text_size;
+
+                                    if index >= TEXT.len() {
+                                        index %= TEXT.len();
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
             }
             WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 if let Some(AppState { gl_surface, window }) = &self.state {
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
-
-                    println!("Redrawing the application");
 
                     unsafe {
                         // let height = window.inner_size().height as i32;
