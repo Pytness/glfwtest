@@ -152,7 +152,10 @@ impl TextRenderer {
     pub unsafe fn get_or_create_glyph(&self, glyph_id: u16) -> Option<&GlyphTexture> {
         if !self.glyphs.borrow().contains_key(&glyph_id) {
             self.ft_face
-                .load_glyph(glyph_id as u32, LoadFlag::RENDER)
+                .load_glyph(
+                    glyph_id as u32,
+                    LoadFlag::RENDER | LoadFlag::TARGET_NORMAL | LoadFlag::FORCE_AUTOHINT,
+                )
                 .expect("freetype load_glyph failed");
 
             let slot = self.ft_face.glyph();
