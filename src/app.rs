@@ -181,11 +181,12 @@ impl ApplicationHandler for App {
                         self.gl()
                             .viewport(0, 0, size.width as i32, size.height as i32);
                         let proj = ortho(size.width as f32, size.height as f32);
+                        let cell_box = self.text_manager.as_ref().unwrap().get_cell_box(0, 0);
                         self.quad_renderer.as_ref().unwrap().with(|| {
                             self.text_renderer.as_ref().unwrap().draw_text(
                                 "office != affine - > --> -> ligatures?",
-                                0.0,
-                                0.0,
+                                cell_box.0 as f32,
+                                cell_box.1 as f32,
                                 FONT_SIZE as f32,
                                 [1.0, 1.0, 0.0],
                                 &proj,
@@ -226,9 +227,10 @@ impl ApplicationHandler for App {
                                 .as_ref()
                                 .unwrap()
                                 .get_cell_box(point.0, point.1);
+
                             self.quad_renderer.as_ref().unwrap().clear_section(
                                 cell_box.0,
-                                height - cell_box.1 - cell_box.3,
+                                height - cell_box.1,
                                 cell_box.2,
                                 cell_box.3,
                             );

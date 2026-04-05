@@ -20,7 +20,9 @@ impl TextManager {
 
     pub fn get_cell_position(&self, row: i32, col: i32) -> (i32, i32) {
         let x = col * self.font_width;
-        let y = row * self.font_height;
+        // Add font_height to y to account for rendering starting from the baseline,
+        // so we want to position the text such that it fits within the cell.
+        let y = row * self.font_height + self.font_height;
 
         (x, y)
     }
