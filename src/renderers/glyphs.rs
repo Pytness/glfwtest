@@ -70,6 +70,20 @@ impl TextRenderer {
     pub fn units_per_em(&self) -> f32 {
         self.rb_face.units_per_em() as f32
     }
+
+    /// Returns (width, height) of the font at the current pixel size.
+    /// This is not the same as the maximum glyph size, but can be used for layout purposes.
+    pub fn font_size(&self) -> (f32, f32) {
+        let metrics = self
+            .ft_face
+            .size_metrics()
+            .expect("failed to get size metrics");
+        let width = (metrics.max_advance >> 6) as f32;
+        let height = (metrics.height >> 6) as f32;
+
+        (width, height)
+    }
+
     pub unsafe fn new(gl: Rc<glow::Context>, font_bytes: &[u8], px_size: u32) -> Self {
         unsafe {
             // rustybuzz face from raw bytes
@@ -308,7 +322,7 @@ impl TextRenderer {
                     gl.draw_arrays(glow::TRIANGLES, 0, 6);
                 }
 
-                pen_x += hb_to_px(g.x_advance, px_size, units_per_em);
+                pen_x += glyph.advance_x as f32; // use freetype advance for pen movement
             }
 
             gl.bind_vertex_array(None);

@@ -8,6 +8,7 @@ pub struct QuadRenderer {
     gl: Rc<glow::Context>,
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
+    vbo: glow::NativeBuffer,
     fbo: glow::NativeFramebuffer,
     color_tex: glow::NativeTexture,
 }
@@ -131,6 +132,20 @@ impl QuadRenderer {
 
             f();
 
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        }
+    }
+
+    pub unsafe fn clear_section(&self, x: i32, y: i32, width: i32, height: i32) {
+        let gl = &self.gl;
+
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(x, y, width, height);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.disable(glow::SCISSOR_TEST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
     }

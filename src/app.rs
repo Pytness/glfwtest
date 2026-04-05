@@ -17,9 +17,14 @@ use glutin::{display::GetGlDisplay, prelude::*};
 
 use glutin_winit::{DisplayBuilder, GlWindow};
 
-use crate::renderers::{self, TextRenderer};
+use crate::{
+    renderers::{self, TextRenderer},
+    text_manager::TextManager,
+};
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
+
+const FONT_SIZE: u32 = 32;
 
 pub struct App {
     gl_handler: GlHandler,
@@ -30,6 +35,7 @@ pub struct App {
     text_renderer: Option<TextRenderer>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
+    text_manager: Option<TextManager>,
 }
 
 struct AppState {
@@ -48,6 +54,7 @@ impl App {
             triangle_renderer: None,
             framebuffer_texture: None,
             quad_renderer: None,
+            text_manager: None,
         }
     }
 
@@ -98,12 +105,22 @@ impl ApplicationHandler for App {
             TextRenderer::new(
                 self.gl.as_ref().unwrap().clone(),
                 include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
-                48,
+                FONT_SIZE,
             )
         });
         self.quad_renderer.get_or_insert_with(|| unsafe {
             renderers::QuadRenderer::new(
                 self.gl.as_ref().unwrap().clone(),
+                window.inner_size().width as i32,
+                window.inner_size().height as i32,
+            )
+        });
+
+        let font_size = self.text_renderer.as_ref().unwrap().font_size();
+        self.text_manager.get_or_insert_with(|| {
+            TextManager::new(
+                font_size.0 as i32,
+                font_size.1 as i32,
                 window.inner_size().width as i32,
                 window.inner_size().height as i32,
             )
@@ -138,6 +155,23 @@ impl ApplicationHandler for App {
                     );
 
                     unsafe {
+                        let font_size = self.text_renderer.as_ref().unwrap().font_size();
+                        let cell_box = self.text_manager.as_ref().unwrap().get_cell_box(0, 0);
+                        println!("Font size: {}x{}", font_size.0, font_size.1);
+                        println!(
+                            "Cell box for (0, 0): x={}, y={}, width={}, height={}",
+                            cell_box.0, cell_box.1, cell_box.2, cell_box.3
+                        );
+
+                        self.text_manager.get_or_insert_with(|| {
+                            TextManager::new(
+                                font_size.0 as i32,
+                                font_size.1 as i32,
+                                size.width as i32,
+                                size.height as i32,
+                            )
+                        });
+
                         self.quad_renderer = Some(renderers::QuadRenderer::new(
                             self.gl.as_ref().unwrap().clone(),
                             size.width as i32,
@@ -148,18 +182,14 @@ impl ApplicationHandler for App {
                             .viewport(0, 0, size.width as i32, size.height as i32);
                         let proj = ortho(size.width as f32, size.height as f32);
                         self.quad_renderer.as_ref().unwrap().with(|| {
-                            let text_positions =
-                                [(0.0, 100.0), (0.0, 200.0), (0.0, 300.0), (0.0, 400.0)];
-                            for point in text_positions {
-                                self.text_renderer.as_ref().unwrap().draw_text(
-                                    "office != affine -> ligatures?",
-                                    point.0,
-                                    point.1,
-                                    48.0,
-                                    [1.0, 1.0, 0.0],
-                                    &proj,
-                                );
-                            }
+                            self.text_renderer.as_ref().unwrap().draw_text(
+                                "office != affine - > --> -> ligatures?",
+                                0.0,
+                                0.0,
+                                FONT_SIZE as f32,
+                                [1.0, 1.0, 0.0],
+                                &proj,
+                            );
                         });
                     }
                 }
@@ -170,11 +200,6 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(AppState { gl_surface, window }) = &self.state {
-                    let proj = ortho(
-                        window.inner_size().width as f32,
-                        window.inner_size().height as f32,
-                    );
-
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
 
                     println!("Redrawing the application");
@@ -182,15 +207,33 @@ impl ApplicationHandler for App {
                     let triangles_positions = [(0.1, 0.0), (-0.5, -0.5), (0.5, -0.5), (0.0, 0.0)];
 
                     unsafe {
-                        self.quad_renderer.as_ref().unwrap().with(|| {
-                            for point in triangles_positions {
-                                self.triangle_renderer.as_ref().unwrap().render(
-                                    point,
-                                    0.5,
-                                    (1.0, 0.0, 0.0),
-                                );
-                            }
-                        });
+                        // self.quad_renderer.as_ref().unwrap().with(|| {
+                        //     for point in triangles_positions {
+                        //         self.triangle_renderer.as_ref().unwrap().render(
+                        //             point,
+                        //             0.5,
+                        //             (1.0, 0.0, 0.0),
+                        //         );
+                        //     }
+                        // });
+                        let width = window.inner_size().width as i32;
+                        let height = window.inner_size().height as i32;
+
+                        let points = [(0, 0), (0, 2), (1, 1), (1, 3)];
+                        for point in points {
+                            let cell_box = self
+                                .text_manager
+                                .as_ref()
+                                .unwrap()
+                                .get_cell_box(point.0, point.1);
+                            self.quad_renderer.as_ref().unwrap().clear_section(
+                                cell_box.0,
+                                height - cell_box.1 - cell_box.3,
+                                cell_box.2,
+                                cell_box.3,
+                            );
+                        }
+
                         self.quad_renderer.as_ref().unwrap().render();
                     }
 

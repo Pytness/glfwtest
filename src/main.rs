@@ -2,6 +2,7 @@ mod app;
 mod gl_handler;
 mod macros;
 mod renderers;
+mod text_manager;
 
 use glutin::config::ConfigTemplateBuilder;
 
