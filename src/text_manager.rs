@@ -1,3 +1,15 @@
+pub struct CellPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+pub struct CellBox {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 pub struct TextManager {
     font_width: i32,
     font_height: i32,
@@ -18,17 +30,23 @@ impl TextManager {
         }
     }
 
-    pub fn get_cell_position(&self, row: i32, col: i32) -> (i32, i32) {
+    pub fn get_cell_position(&self, row: i32, col: i32) -> CellPosition {
         let x = col * self.font_width;
         // Add font_height to y to account for rendering starting from the baseline,
         // so we want to position the text such that it fits within the cell.
         let y = row * self.font_height + self.font_height;
 
-        (x, y)
+        CellPosition { x, y }
     }
 
-    pub fn get_cell_box(&self, row: i32, col: i32) -> (i32, i32, i32, i32) {
-        let (x, y) = self.get_cell_position(row, col);
-        (x, y, self.font_width, self.font_height)
+    pub fn get_cell_box(&self, row: i32, col: i32) -> CellBox {
+        let CellPosition { x, y } = self.get_cell_position(row, col);
+
+        CellBox {
+            x,
+            y,
+            width: self.font_width,
+            height: self.font_height,
+        }
     }
 }

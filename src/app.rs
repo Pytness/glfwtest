@@ -25,6 +25,7 @@ use crate::{
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 const FONT_SIZE: u32 = 32;
+const TEXT: &str = "abcd efgh ijkl mnop qrst uvwx yz 0123 4567 89";
 
 pub struct App {
     gl_handler: GlHandler,
@@ -36,6 +37,7 @@ pub struct App {
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
     text_manager: Option<TextManager>,
+    text_index: usize,
 }
 
 struct AppState {
@@ -55,6 +57,7 @@ impl App {
             framebuffer_texture: None,
             quad_renderer: None,
             text_manager: None,
+            text_index: 0,
         }
     }
 
@@ -126,6 +129,16 @@ impl ApplicationHandler for App {
             )
         });
 
+        // if self.text_index > 0 {
+        //     self.text_renderer.as_ref().unwrap().render_text(
+        //         TEXT,
+        //         0,
+        //         0,
+        //         self.text_index as i32,
+        //         (1.0, 1.0, 1.0),
+        //     );
+        // }
+
         self.state = Some(AppState { gl_surface, window });
     }
 
@@ -156,12 +169,6 @@ impl ApplicationHandler for App {
 
                     unsafe {
                         let font_size = self.text_renderer.as_ref().unwrap().font_size();
-                        let cell_box = self.text_manager.as_ref().unwrap().get_cell_box(0, 0);
-                        println!("Font size: {}x{}", font_size.0, font_size.1);
-                        println!(
-                            "Cell box for (0, 0): x={}, y={}, width={}, height={}",
-                            cell_box.0, cell_box.1, cell_box.2, cell_box.3
-                        );
 
                         self.text_manager.get_or_insert_with(|| {
                             TextManager::new(
@@ -181,17 +188,6 @@ impl ApplicationHandler for App {
                         self.gl()
                             .viewport(0, 0, size.width as i32, size.height as i32);
                         let proj = ortho(size.width as f32, size.height as f32);
-                        let cell_box = self.text_manager.as_ref().unwrap().get_cell_box(0, 0);
-                        self.quad_renderer.as_ref().unwrap().with(|| {
-                            self.text_renderer.as_ref().unwrap().draw_text(
-                                "office != affine - > --> -> ligatures?",
-                                cell_box.0 as f32,
-                                cell_box.1 as f32,
-                                FONT_SIZE as f32,
-                                [1.0, 1.0, 0.0],
-                                &proj,
-                            );
-                        });
                     }
                 }
             }
@@ -205,41 +201,70 @@ impl ApplicationHandler for App {
 
                     println!("Redrawing the application");
 
-                    let triangles_positions = [(0.1, 0.0), (-0.5, -0.5), (0.5, -0.5), (0.0, 0.0)];
-
                     unsafe {
-                        // self.quad_renderer.as_ref().unwrap().with(|| {
-                        //     for point in triangles_positions {
-                        //         self.triangle_renderer.as_ref().unwrap().render(
-                        //             point,
-                        //             0.5,
-                        //             (1.0, 0.0, 0.0),
-                        //         );
-                        //     }
-                        // });
-                        let width = window.inner_size().width as i32;
-                        let height = window.inner_size().height as i32;
-
-                        let points = [(0, 0), (0, 2), (1, 1), (1, 3)];
-                        for point in points {
-                            let cell_box = self
-                                .text_manager
-                                .as_ref()
-                                .unwrap()
-                                .get_cell_box(point.0, point.1);
-
-                            self.quad_renderer.as_ref().unwrap().clear_section(
-                                cell_box.0,
-                                height - cell_box.1,
-                                cell_box.2,
-                                cell_box.3,
-                            );
-                        }
+                        // let height = window.inner_size().height as i32;
+                        //
+                        // let points = [(0, 0), (0, 2), (1, 1), (1, 3)];
+                        // for point in points {
+                        //     let cell_box = self
+                        //         .text_manager
+                        //         .as_ref()
+                        //         .unwrap()
+                        //         .get_cell_box(point.0, point.1);
+                        //
+                        //     self.quad_renderer.as_ref().unwrap().clear_section(
+                        //         cell_box.x,
+                        //         height - cell_box.y,
+                        //         cell_box.width,
+                        //         cell_box.height,
+                        //     );
+                        // }
 
                         self.quad_renderer.as_ref().unwrap().render();
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();
+                }
+            }
+            WindowEvent::MouseInput {
+                device_id,
+                state,
+                button,
+            } => {
+                if state == winit::event::ElementState::Pressed
+                    && button == winit::event::MouseButton::Left
+                {
+                    let window = &self.state.as_ref().unwrap().window;
+
+                    if self.text_index < TEXT.len() {
+                        let font_size = self.text_renderer.as_ref().unwrap().font_size();
+                        let text_manager = self.text_manager.as_ref().unwrap();
+
+                        let cell_position =
+                            text_manager.get_cell_position(0, self.text_index as i32);
+
+                        let proj = ortho(
+                            window.inner_size().width as f32,
+                            window.inner_size().height as f32,
+                        );
+
+                        unsafe {
+                            self.quad_renderer.as_ref().unwrap().with(|| {
+                                self.text_renderer.as_ref().unwrap().draw_text(
+                                    &TEXT[self.text_index..self.text_index + 1],
+                                    cell_position.x as f32,
+                                    cell_position.y as f32,
+                                    FONT_SIZE as f32,
+                                    [1.0, 1.0, 1.0],
+                                    &proj,
+                                );
+                            })
+                        }
+
+                        self.text_index += 1;
+                    }
+
+                    window.request_redraw();
                 }
             }
             _ => (),
