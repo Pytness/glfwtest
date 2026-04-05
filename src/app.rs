@@ -25,8 +25,11 @@ pub struct App {
     gl_handler: GlHandler,
     state: Option<AppState>,
     gl: Option<Rc<glow::Context>>,
+    framebuffer: Option<glow::Framebuffer>,
+    framebuffer_texture: Option<glow::NativeTexture>,
     text_renderer: Option<TextRenderer>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
+    quad_renderer: Option<renderers::QuadRenderer>,
 }
 
 struct AppState {
@@ -40,9 +43,18 @@ impl App {
             gl_handler: GlHandler::new(template, display_builder),
             state: None,
             gl: None,
+            framebuffer: None,
             text_renderer: None,
             triangle_renderer: None,
+            framebuffer_texture: None,
+            quad_renderer: None,
         }
+    }
+
+    /// SAFETY: This function should only be called after the OpenGL context has been created and made current in the `resumed` method.
+    /// Calling this function before that will result in undefined behavior.
+    pub unsafe fn gl(&self) -> &glow::Context {
+        self.gl.as_ref().unwrap()
     }
 }
 
@@ -79,18 +91,22 @@ impl ApplicationHandler for App {
 
         self.gl = Some(Rc::new(gl));
 
-        unsafe {
-            self.text_renderer.get_or_insert_with(|| {
-                TextRenderer::new(
-                    self.gl.as_ref().unwrap().clone(),
-                    include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
-                    48,
-                )
-            });
-        }
-
         self.triangle_renderer.get_or_insert_with(|| unsafe {
             renderers::TriangleRenderer::new(self.gl.as_ref().unwrap().clone())
+        });
+        self.text_renderer.get_or_insert_with(|| unsafe {
+            TextRenderer::new(
+                self.gl.as_ref().unwrap().clone(),
+                include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
+                48,
+            )
+        });
+        self.quad_renderer.get_or_insert_with(|| unsafe {
+            renderers::QuadRenderer::new(
+                self.gl.as_ref().unwrap().clone(),
+                window.inner_size().width as i32,
+                window.inner_size().height as i32,
+            )
         });
 
         self.state = Some(AppState { gl_surface, window });
@@ -122,15 +138,29 @@ impl ApplicationHandler for App {
                     );
 
                     unsafe {
-                        self.gl.as_ref().unwrap().viewport(
-                            0,
-                            0,
+                        self.quad_renderer = Some(renderers::QuadRenderer::new(
+                            self.gl.as_ref().unwrap().clone(),
                             size.width as i32,
                             size.height as i32,
-                        );
+                        ));
 
-                        self.triangle_renderer =
-                            Some(self.triangle_renderer.take().unwrap().resize());
+                        self.gl()
+                            .viewport(0, 0, size.width as i32, size.height as i32);
+                        let proj = ortho(size.width as f32, size.height as f32);
+                        self.quad_renderer.as_ref().unwrap().with(|| {
+                            let text_positions =
+                                [(0.0, 100.0), (0.0, 200.0), (0.0, 300.0), (0.0, 400.0)];
+                            for point in text_positions {
+                                self.text_renderer.as_ref().unwrap().draw_text(
+                                    "office != affine -> ligatures?",
+                                    point.0,
+                                    point.1,
+                                    48.0,
+                                    [1.0, 1.0, 0.0],
+                                    &proj,
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -139,20 +169,6 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                // Redraw the application.
-                //
-                // It's preferable for applications that do not render continuously to render in
-                // this event rather than in AboutToWait, since rendering in here allows
-                // the program to gracefully handle redraws requested by the OS.
-
-                // Draw.
-
-                // Queue a RedrawRequested event.
-                //
-                // You only need to call this if you've determined that you need to redraw in
-                // applications which do not always need to. Applications that redraw continuously
-                // can render here instead.
-                // self.window.as_ref().unwrap().request_redraw();
                 if let Some(AppState { gl_surface, window }) = &self.state {
                     let proj = ortho(
                         window.inner_size().width as f32,
@@ -161,33 +177,24 @@ impl ApplicationHandler for App {
 
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
 
+                    println!("Redrawing the application");
+
                     let triangles_positions = [(0.1, 0.0), (-0.5, -0.5), (0.5, -0.5), (0.0, 0.0)];
-                    let text_positions = [(0.0, 100.0), (0.0, 200.0), (0.0, 300.0), (0.0, 400.0)];
 
                     unsafe {
-                        for point in triangles_positions {
-                            self.triangle_renderer.as_ref().unwrap().render(
-                                self.gl.as_ref().unwrap(),
-                                point,
-                                0.1,
-                                (1.0, 1.0, 1.0),
-                            );
-                        }
-
-                        for point in text_positions {
-                            self.text_renderer.as_ref().unwrap().draw_text(
-                                "office != affine -> ligatures?",
-                                point.0,
-                                point.1,
-                                48.0,
-                                [1.0, 1.0, 0.0],
-                                &proj,
-                            );
-                        }
+                        self.quad_renderer.as_ref().unwrap().with(|| {
+                            for point in triangles_positions {
+                                self.triangle_renderer.as_ref().unwrap().render(
+                                    point,
+                                    0.5,
+                                    (1.0, 0.0, 0.0),
+                                );
+                            }
+                        });
+                        self.quad_renderer.as_ref().unwrap().render();
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();
-                    window.request_redraw();
                 }
             }
             _ => (),

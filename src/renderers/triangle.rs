@@ -27,31 +27,11 @@ impl TriangleRenderer {
         }
     }
 
-    pub unsafe fn resize(self) -> Self {
-        unsafe {
-            let gl = &self.gl;
-            gl.delete_buffer(self.vbo);
-            gl.delete_vertex_array(self.vao);
-
-            let vao = gl.create_vertex_array().expect("Cannot create VAO");
-            let vbo = gl.create_buffer().expect("Cannot create VBO");
-
-            Self {
-                gl: self.gl,
-                program: self.program,
-                vao,
-                vbo,
-            }
-        }
+    pub unsafe fn gl(&self) -> &glow::Context {
+        &self.gl
     }
 
-    pub unsafe fn render(
-        &self,
-        gl: &glow::Context,
-        center: (f32, f32),
-        size: f32,
-        color: (f32, f32, f32),
-    ) {
+    pub unsafe fn render(&self, center: (f32, f32), size: f32, color: (f32, f32, f32)) {
         // #[rustfmt::skip]
         // let vertices: [f32; 18] = [
         //     // x,    y,   z,   r,   g,   b
@@ -68,6 +48,8 @@ impl TriangleRenderer {
         ];
 
         unsafe {
+            let gl = self.gl();
+
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
 
