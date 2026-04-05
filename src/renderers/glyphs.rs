@@ -4,86 +4,8 @@ use rustybuzz::{Face as RbFace, UnicodeBuffer};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::LazyLock;
 
 use crate::macros::macs::include_shader;
-// gl.delete_vertex_array(self.vao);
-// gl.delete_buffer(self.vbo);
-// gl.delete_program(self.program);
-
-static mut VERTEX_MAP: LazyLock<HashMap<glow::VertexArray, usize>> =
-    LazyLock::new(|| HashMap::new());
-
-static mut BUFFER_MAP: LazyLock<HashMap<glow::Buffer, usize>> = LazyLock::new(|| HashMap::new());
-static mut TEXTURE_MAP: LazyLock<HashMap<glow::Texture, usize>> = LazyLock::new(|| HashMap::new());
-
-macro_rules! create_vertex_array {
-    ($gl:expr) => {
-        unsafe {
-            {
-                let vao = ($gl).create_vertex_array().unwrap();
-                (*VERTEX_MAP).entry(vao).or_insert(0).wrapping_add(1);
-                vao
-            }
-        }
-    };
-}
-macro_rules! create_buffer {
-    ($gl:expr) => {
-        unsafe {
-            {
-                let vbo = ($gl).create_buffer().unwrap();
-                (*BUFFER_MAP).entry(vbo).or_insert(0).wrapping_add(1);
-                vbo
-            }
-        }
-    };
-}
-
-macro_rules! create_texture {
-    ($gl:expr) => {
-        unsafe {
-            {
-                let tex = ($gl).create_texture().unwrap();
-                (*TEXTURE_MAP).entry(tex).or_insert(0).wrapping_add(1);
-                tex
-            }
-        }
-    };
-}
-
-macro_rules! delete_vertex_array {
-    ($gl:expr, $vao:expr) => {
-        unsafe {
-            ($gl).delete_vertex_array($vao);
-            (*VERTEX_MAP)
-                .entry($vao)
-                .and_modify(|c| *c = c.wrapping_sub(1));
-        }
-    };
-}
-
-macro_rules! delete_buffer {
-    ($gl:expr, $vbo:expr) => {
-        unsafe {
-            ($gl).delete_buffer($vbo);
-            (*BUFFER_MAP)
-                .entry($vbo)
-                .and_modify(|c| *c = c.wrapping_sub(1));
-        }
-    };
-}
-
-macro_rules! delete_texture {
-    ($gl:expr, $tex:expr) => {
-        unsafe {
-            ($gl).delete_texture($tex);
-            (*TEXTURE_MAP)
-                .entry($tex)
-                .and_modify(|c| *c = c.wrapping_sub(1));
-        }
-    };
-}
 
 struct GlyphId(u32);
 
@@ -129,6 +51,7 @@ pub struct GlyphTexture {
 
 pub struct TextRenderer {
     gl: Rc<glow::Context>,
+    ft_lib: Library,
     ft_face: freetype::Face,
     rb_face: RbFace<'static>,
 
@@ -182,10 +105,8 @@ impl TextRenderer {
 
             let program = include_shader!(gl, "font");
 
-            // let vao = gl.create_vertex_array().unwrap();
-            let vao = create_vertex_array!(gl);
-            // let vbo = gl.create_buffer().unwrap();
-            let vbo = create_buffer!(gl);
+            let vao = gl.create_vertex_array().unwrap();
+            let vbo = gl.create_buffer().unwrap();
 
             let u_proj = gl.get_uniform_location(program, "u_proj");
             let u_color = gl.get_uniform_location(program, "u_text_color");
@@ -193,6 +114,7 @@ impl TextRenderer {
 
             Self {
                 gl,
+                ft_lib,
                 ft_face,
                 rb_face,
                 glyphs: RefCell::new(HashMap::new()),
@@ -247,8 +169,7 @@ impl TextRenderer {
             let gl = self.gl.as_ref();
 
             unsafe {
-                // let tex = gl.create_texture().unwrap();
-                let tex = create_texture!(gl);
+                let tex = gl.create_texture().unwrap();
                 gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
                 gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
@@ -407,22 +328,6 @@ impl TextRenderer {
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.use_program(None);
-
-            for entry in (*VERTEX_MAP).iter() {
-                if entry.1 > &0 {
-                    println!("Warning: {} vertex arrays were not deleted!", entry.1);
-                }
-            }
-            for entry in (*BUFFER_MAP).iter() {
-                if entry.1 > &0 {
-                    println!("Warning: {} buffers were not deleted!", entry.1);
-                }
-            }
-            for entry in (*TEXTURE_MAP).iter() {
-                if entry.1 > &0 {
-                    println!("Warning: {} textures were not deleted!", entry.1);
-                }
-            }
         }
     }
 }
@@ -434,14 +339,10 @@ impl Drop for TextRenderer {
 
             for glyph in self.glyphs.borrow().values() {
                 gl.delete_texture(glyph.tex);
-                // delete_texture!(gl, glyph.tex);
             }
 
             gl.delete_vertex_array(self.vao);
             gl.delete_buffer(self.vbo);
-
-            // delete_vertex_array!(gl, self.vao);
-            // delete_buffer!(gl, self.vbo);
             gl.delete_program(self.program);
         }
     }
