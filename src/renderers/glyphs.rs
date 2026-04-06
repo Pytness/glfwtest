@@ -63,6 +63,7 @@ pub struct TextRenderer {
     u_proj: Option<glow::NativeUniformLocation>,
     u_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
+    _font_size: (f32, f32),
 }
 
 impl TextRenderer {
@@ -73,14 +74,7 @@ impl TextRenderer {
     /// Returns (width, height) of the font at the current pixel size.
     /// This is not the same as the maximum glyph size, but can be used for layout purposes.
     pub fn font_size(&self) -> (f32, f32) {
-        let metrics = self
-            .ft_face
-            .size_metrics()
-            .expect("failed to get size metrics");
-        let width = (metrics.max_advance >> 6) as f32;
-        let height = (metrics.height >> 6) as f32;
-
-        (width, height)
+        return self._font_size;
     }
 
     pub unsafe fn new(gl: Rc<glow::Context>, font_bytes: &[u8], px_size: u32) -> Self {
@@ -102,6 +96,12 @@ impl TextRenderer {
                 .set_pixel_sizes(0, px_size)
                 .expect("failed to set pixel size");
 
+            let metrics = ft_face.size_metrics().expect("failed to get size metrics");
+            let width = (metrics.max_advance >> 6) as f32;
+            let height = (metrics.height >> 6) as f32;
+
+            let font_size = (width, height);
+
             let program = include_shader!(gl, "font");
 
             let vao = gl.create_vertex_array().unwrap();
@@ -122,6 +122,7 @@ impl TextRenderer {
                 u_proj,
                 u_color,
                 u_tex,
+                _font_size: font_size,
             }
         }
     }
@@ -134,7 +135,6 @@ impl TextRenderer {
 
         let infos = shaped.glyph_infos();
         let positions = shaped.glyph_positions();
-
         infos
             .iter()
             .zip(positions.iter())
@@ -335,7 +335,7 @@ impl TextRenderer {
                     gl.draw_arrays(glow::TRIANGLES, 0, 6);
                 }
 
-                pen_x += glyph.advance_x as f32; // use freetype advance for pen movement
+                pen_x += self._font_size.0; // use freetype advance for pen movement
             }
 
             gl.bind_vertex_array(None);
