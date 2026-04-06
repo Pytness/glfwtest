@@ -26,7 +26,8 @@ use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 const FONT_SIZE: u32 = 20;
 // const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
-const TEXT: &str = "a ---- <- -> <= << <= ------------ ";
+// const TEXT: &str = "a ---- <- -> <= << <= ------------ b";
+const TEXT: &str = "a -<- <= b🤔";
 
 pub struct App {
     gl_handler: GlHandler,
