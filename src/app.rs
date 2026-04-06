@@ -24,8 +24,9 @@ use crate::{
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
-const FONT_SIZE: u32 = 32;
-const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
+const FONT_SIZE: u32 = 20;
+// const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
+const TEXT: &str = "a ---- <- -> <= << <= ------------ ";
 
 pub struct App {
     gl_handler: GlHandler,
@@ -174,6 +175,8 @@ impl ApplicationHandler for App {
 
                         let text_manager = self.text_manager.as_ref().unwrap();
 
+                        let chars = &TEXT.chars().collect::<Vec<_>>();
+
                         self.quad_renderer.as_ref().unwrap().with(|| {
                             let mut index = 0;
 
@@ -182,16 +185,19 @@ impl ApplicationHandler for App {
 
                                 while col <= text_manager.cols as usize {
                                     let text_size =
-                                        (TEXT.len() - index).min(text_manager.cols as usize - col);
+                                        (chars.len() - index).min(text_manager.cols as usize - col);
                                     if text_size == 0 {
                                         break;
                                     }
+
+                                    let string =
+                                        chars[index..index + text_size].iter().collect::<String>();
 
                                     let cell_position =
                                         text_manager.get_cell_position(row, col as i32);
 
                                     self.text_renderer.as_ref().unwrap().draw_text(
-                                        &TEXT[index..index + text_size],
+                                        &string,
                                         cell_position.x as f32,
                                         cell_position.y as f32,
                                         FONT_SIZE as f32,
@@ -202,8 +208,8 @@ impl ApplicationHandler for App {
                                     col += text_size;
                                     index += text_size;
 
-                                    if index >= TEXT.len() {
-                                        index %= TEXT.len();
+                                    if index >= chars.len() {
+                                        index %= chars.len();
                                     }
                                 }
                             }

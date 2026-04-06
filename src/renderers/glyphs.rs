@@ -175,16 +175,23 @@ impl TextRenderer {
 
                 gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
 
+                // Expand the grayscale bitmap to RGBA before uploading
+                let buf = bitmap.buffer();
+                let mut rgba_buf = Vec::with_capacity((width * height * 4) as usize);
+                for &v in buf {
+                    rgba_buf.extend_from_slice(&[v, v, v, v]);
+                }
+
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
-                    glow::R8 as i32,
+                    glow::RGBA as i32,
                     width,
                     height,
                     0,
-                    glow::RED,
+                    glow::RGBA,
                     glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+                    glow::PixelUnpackData::Slice(Some(&rgba_buf)),
                 );
 
                 gl.tex_parameter_i32(
@@ -242,7 +249,7 @@ impl TextRenderer {
         px_size: f32,
         color: [f32; 3],
         proj: &[f32; 16],
-    ) {
+    ) -> usize {
         let shaped = self.shape_text(text);
         let units_per_em = self.units_per_em();
 
@@ -262,13 +269,18 @@ impl TextRenderer {
             gl.bind_vertex_array(Some(self.vao));
 
             gl.enable(glow::BLEND);
-            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
 
             gl.uniform_matrix_4_f32_slice(self.u_proj.as_ref(), false, proj);
             gl.uniform_3_f32(self.u_color.as_ref(), color[0], color[1], color[2]);
             gl.uniform_1_i32(self.u_tex.as_ref(), 0);
 
-            for g in shaped {
+            for g in &shaped {
                 let glyph = self
                     .get_or_create_glyph(g.glyph_id.0 as u16)
                     .expect("failed to get or create glyph");
@@ -329,6 +341,8 @@ impl TextRenderer {
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.use_program(None);
+
+            shaped.len()
         }
     }
 }
