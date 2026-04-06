@@ -8,7 +8,6 @@ pub(crate) mod macs {
     macro_rules! include_shader {
         ($gl: ident, $name: literal ) => {{
             let gl = &$gl;
-            let program = gl.create_program().expect("Cannot create program");
 
             let vs_source = include_str!(concat!(
                 crate::macros::macs::assets_path!("shaders/"),
@@ -25,6 +24,8 @@ pub(crate) mod macs {
                 $name,
                 ".frag"
             ));
+
+            let program = gl.create_program().expect("Cannot create program");
 
             let vs = gl
                 .create_shader(glow::VERTEX_SHADER)
