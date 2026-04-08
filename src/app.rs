@@ -197,11 +197,10 @@ impl ApplicationHandler for App {
                                     let cell_position =
                                         text_manager.get_cell_position(row, col as i32);
 
-                                    self.text_renderer.as_ref().unwrap().draw_text(
+                                    self.text_renderer.as_mut().unwrap().draw_text(
                                         &string,
                                         cell_position.x as f32,
                                         cell_position.y as f32,
-                                        FONT_SIZE as f32,
                                         [1.0, 1.0, 1.0],
                                         &proj,
                                     );
@@ -273,11 +272,10 @@ impl ApplicationHandler for App {
 
                         unsafe {
                             self.quad_renderer.as_ref().unwrap().with(|| {
-                                self.text_renderer.as_ref().unwrap().draw_text(
+                                self.text_renderer.as_mut().unwrap().draw_text(
                                     &TEXT[self.text_index..self.text_index + 1],
                                     cell_position.x as f32,
                                     cell_position.y as f32,
-                                    FONT_SIZE as f32,
                                     [1.0, 1.0, 1.0],
                                     &proj,
                                 );

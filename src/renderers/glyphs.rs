@@ -1,33 +1,23 @@
+use std::collections::HashMap;
+use std::mem::{ManuallyDrop, offset_of, size_of};
+use std::rc::Rc;
+
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
 use rustybuzz::{Face as RbFace, UnicodeBuffer};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::macros::macs::include_shader;
 
-struct GlyphId(u32);
-
 pub struct ShapedGlyph {
-    glyph_id: GlyphId,
-    x_advance: f32,
-    y_advance: f32,
-    x_offset: f32,
-    y_offset: f32,
-}
-
-struct CachedGlyph {
-    uv_min: [f32; 2],
-    uv_max: [f32; 2],
-    width: f32,
-    height: f32,
-    bearing_x: f32,
-    bearing_y: f32,
-}
-
-struct GlyphCache {
-    cache: HashMap<GlyphId, CachedGlyph>,
+    pub glyph_id: u32,
+    // x_advance/y_advance are provided for completeness (callers doing free-flow layout
+    // may use them); the terminal renderer ignores them in favour of a fixed cell width.
+    #[allow(dead_code)]
+    pub x_advance: f32,
+    #[allow(dead_code)]
+    pub y_advance: f32,
+    pub x_offset: f32,
+    pub y_offset: f32,
 }
 
 #[repr(C)]
@@ -40,21 +30,24 @@ struct Vertex {
 unsafe impl bytemuck::Pod for Vertex {}
 unsafe impl bytemuck::Zeroable for Vertex {}
 
-pub struct GlyphTexture {
+struct GlyphTexture {
     tex: glow::NativeTexture,
     width: i32,
     height: i32,
     left: i32,
     top: i32,
-    advance_x: i32, // 26.6 -> already shifted down to pixels
 }
 
 pub struct TextRenderer {
     gl: Rc<glow::Context>,
+    // font_data must outlive rb_face; both are dropped explicitly in Drop (rb_face first)
+    _font_data: ManuallyDrop<Box<[u8]>>,
+    // Keep the FreeType library alive as long as ft_face is live
+    _ft_lib: Library,
     ft_face: freetype::Face,
-    rb_face: RbFace<'static>,
+    rb_face: ManuallyDrop<RbFace<'static>>,
 
-    glyphs: RefCell<HashMap<u16, GlyphTexture>>,
+    glyphs: HashMap<u32, GlyphTexture>,
 
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
@@ -63,7 +56,8 @@ pub struct TextRenderer {
     u_proj: Option<glow::NativeUniformLocation>,
     u_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
-    _font_size: (f32, f32),
+    font_size_px: (f32, f32),
+    px_size: f32,
 }
 
 impl TextRenderer {
@@ -74,56 +68,57 @@ impl TextRenderer {
     /// Returns (width, height) of the font at the current pixel size.
     /// This is not the same as the maximum glyph size, but can be used for layout purposes.
     pub fn font_size(&self) -> (f32, f32) {
-        return self._font_size;
+        self.font_size_px
     }
 
     pub unsafe fn new(gl: Rc<glow::Context>, font_bytes: &[u8], px_size: u32) -> Self {
-        unsafe {
-            // rustybuzz face from raw bytes
-            // leak for simplicity in this minimal example
-            let bytes = font_bytes.to_vec();
-            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-            let rb_face = RbFace::from_slice(leaked, 0).expect("failed to create rustybuzz face");
+        // Box the font bytes so they can be freed when the renderer is dropped.
+        let font_data: Box<[u8]> = font_bytes.to_vec().into_boxed_slice();
+        // SAFETY: we extend the lifetime to 'static here, but we guarantee that
+        // rb_face (which borrows this data) is dropped before font_data in our Drop impl.
+        let font_data_static: &'static [u8] = unsafe { &*(&*font_data as *const [u8]) };
+        let rb_face =
+            RbFace::from_slice(font_data_static, 0).expect("failed to create rustybuzz face");
 
-            // freetype face
-            let ft_lib = Library::init().expect("failed to init freetype");
+        let ft_lib = Library::init().expect("failed to init freetype");
+        let ft_face = ft_lib
+            .new_memory_face(font_bytes.to_vec(), 0)
+            .expect("failed to load freetype face");
+        ft_face
+            .set_pixel_sizes(0, px_size)
+            .expect("failed to set pixel size");
 
-            let ft_face = ft_lib
-                .new_memory_face(font_bytes.to_vec(), 0)
-                .expect("failed to load freetype face");
+        let metrics = ft_face.size_metrics().expect("failed to get size metrics");
+        let cell_width = metrics.max_advance as f32 / 64.0;
+        let cell_height = metrics.height as f32 / 64.0;
+        let font_size_px = (cell_width, cell_height);
 
-            ft_face
-                .set_pixel_sizes(0, px_size)
-                .expect("failed to set pixel size");
+        // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
+        // implicitly permit unsafe calls without an unsafe{} block.
+        let program = unsafe { include_shader!(gl, "font") };
 
-            let metrics = ft_face.size_metrics().expect("failed to get size metrics");
-            let width = (metrics.max_advance >> 6) as f32;
-            let height = (metrics.height >> 6) as f32;
+        let vao = unsafe { gl.create_vertex_array().unwrap() };
+        let vbo = unsafe { gl.create_buffer().unwrap() };
 
-            let font_size = (width, height);
+        let u_proj = unsafe { gl.get_uniform_location(program, "u_proj") };
+        let u_color = unsafe { gl.get_uniform_location(program, "u_text_color") };
+        let u_tex = unsafe { gl.get_uniform_location(program, "u_font") };
 
-            let program = include_shader!(gl, "font");
-
-            let vao = gl.create_vertex_array().unwrap();
-            let vbo = gl.create_buffer().unwrap();
-
-            let u_proj = gl.get_uniform_location(program, "u_proj");
-            let u_color = gl.get_uniform_location(program, "u_text_color");
-            let u_tex = gl.get_uniform_location(program, "u_tex");
-
-            Self {
-                gl,
-                ft_face,
-                rb_face,
-                glyphs: RefCell::new(HashMap::new()),
-                program,
-                vao,
-                vbo,
-                u_proj,
-                u_color,
-                u_tex,
-                _font_size: font_size,
-            }
+        Self {
+            gl,
+            _font_data: ManuallyDrop::new(font_data),
+            _ft_lib: ft_lib,
+            ft_face,
+            rb_face: ManuallyDrop::new(rb_face),
+            glyphs: HashMap::new(),
+            program,
+            vao,
+            vbo,
+            u_proj,
+            u_color,
+            u_tex,
+            font_size_px,
+            px_size: px_size as f32,
         }
     }
 
@@ -139,8 +134,8 @@ impl TextRenderer {
             .iter()
             .zip(positions.iter())
             .map(|(info, pos)| ShapedGlyph {
-                glyph_id: GlyphId(info.glyph_id),
-                // rustybuzz positions are in font units; convert to pixels later
+                glyph_id: info.glyph_id,
+                // rustybuzz positions are in font units; converted to pixels in draw_text
                 x_advance: pos.x_advance as f32,
                 y_advance: pos.y_advance as f32,
                 x_offset: pos.x_offset as f32,
@@ -149,124 +144,124 @@ impl TextRenderer {
             .collect()
     }
 
-    pub unsafe fn get_or_create_glyph(&self, glyph_id: u16) -> Option<&GlyphTexture> {
-        if !self.glyphs.borrow().contains_key(&glyph_id) {
-            self.ft_face
-                .load_glyph(
-                    glyph_id as u32,
-                    LoadFlag::RENDER | LoadFlag::TARGET_NORMAL | LoadFlag::FORCE_AUTOHINT,
-                )
-                .expect("freetype load_glyph failed");
-
-            let slot = self.ft_face.glyph();
-            let bitmap = slot.bitmap();
-
-            let width = bitmap.width();
-            let height = bitmap.rows();
-            let left = slot.bitmap_left();
-            let top = slot.bitmap_top();
-            let advance_x = (slot.advance().x >> 6) as i32;
-
-            let gl = self.gl.as_ref();
-
-            unsafe {
-                let tex = gl.create_texture().unwrap();
-                gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-
-                // Expand the grayscale bitmap to RGBA before uploading
-                let buf = bitmap.buffer();
-                let mut rgba_buf = Vec::with_capacity((width * height * 4) as usize);
-                for &v in buf {
-                    rgba_buf.extend_from_slice(&[v, v, v, v]);
-                }
-
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA as i32,
-                    width,
-                    height,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&rgba_buf)),
-                );
-
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_WRAP_S,
-                    glow::CLAMP_TO_EDGE as i32,
-                );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_WRAP_T,
-                    glow::CLAMP_TO_EDGE as i32,
-                );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MIN_FILTER,
-                    glow::LINEAR as i32,
-                );
-                gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MAG_FILTER,
-                    glow::LINEAR as i32,
-                );
-
-                self.glyphs.borrow_mut().insert(
-                    glyph_id,
-                    GlyphTexture {
-                        tex,
-                        width,
-                        height,
-                        left,
-                        top,
-                        advance_x,
-                    },
-                );
-            }
+    /// Ensures the glyph is loaded and cached.
+    /// Returns a tuple of (left, top, width, height, tex) to avoid holding a
+    /// reference into `self.glyphs` across subsequent `self` accesses.
+    fn ensure_glyph(&mut self, glyph_id: u32) -> Option<(i32, i32, i32, i32, glow::NativeTexture)> {
+        if !self.glyphs.contains_key(&glyph_id) {
+            // SAFETY: requires an active GL context.
+            let texture =
+                unsafe { Self::load_glyph_texture(self.gl.as_ref(), &self.ft_face, glyph_id)? };
+            self.glyphs.insert(glyph_id, texture);
         }
+        let g = self.glyphs.get(&glyph_id)?;
+        Some((g.left, g.top, g.width, g.height, g.tex))
+    }
 
-        let glyph = unsafe {
-            self.glyphs
-                .try_borrow_unguarded()
-                .ok()
-                .unwrap()
-                .get(&glyph_id)
-                .unwrap()
-        };
+    /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
+    ///
+    /// The texture uses the `GL_RED` internal format (one byte per texel) to
+    /// minimise GPU memory usage.  The fragment shader samples only the red
+    /// channel.
+    unsafe fn load_glyph_texture(
+        gl: &glow::Context,
+        ft_face: &freetype::Face,
+        glyph_id: u32,
+    ) -> Option<GlyphTexture> {
+        ft_face
+            .load_glyph(
+                glyph_id,
+                LoadFlag::RENDER | LoadFlag::TARGET_NORMAL | LoadFlag::FORCE_AUTOHINT,
+            )
+            .expect("freetype load_glyph failed");
 
-        Some(glyph)
+        let slot = ft_face.glyph();
+        let bitmap = slot.bitmap();
+
+        let width = bitmap.width();
+        let height = bitmap.rows();
+        let left = slot.bitmap_left();
+        let top = slot.bitmap_top();
+
+        // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
+        // implicitly permit unsafe calls without an unsafe{} block.
+        unsafe {
+            let tex = gl.create_texture().ok()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+
+            // Grayscale bitmap: one byte per pixel, no alignment padding needed.
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::R8 as i32,
+                width,
+                height,
+                0,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+            );
+
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+
+            Some(GlyphTexture {
+                tex,
+                width,
+                height,
+                left,
+                top,
+            })
+        }
     }
 
     pub unsafe fn draw_text(
-        &self,
+        &mut self,
         text: &str,
         mut pen_x: f32,
         baseline_y: f32,
-        px_size: f32,
         color: [f32; 3],
         proj: &[f32; 16],
     ) -> usize {
         let shaped = self.shape_text(text);
         let units_per_em = self.units_per_em();
+        let px_size = self.px_size;
 
-        let gl = self.gl.as_ref();
+        let stride = size_of::<Vertex>() as i32;
+        let uv_offset = offset_of!(Vertex, uv) as i32;
 
         unsafe {
+            let gl = self.gl.as_ref();
+
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
 
             gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0);
 
             gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, uv_offset);
 
             gl.use_program(Some(self.program));
-            gl.bind_vertex_array(Some(self.vao));
 
             gl.enable(glow::BLEND);
             gl.blend_func_separate(
@@ -281,18 +276,21 @@ impl TextRenderer {
             gl.uniform_1_i32(self.u_tex.as_ref(), 0);
 
             for g in &shaped {
-                let glyph = self
-                    .get_or_create_glyph(g.glyph_id.0 as u16)
-                    .expect("failed to get or create glyph");
+                // Extract all glyph data as owned/Copy values so the borrow on
+                // `self.glyphs` ends before we re-access other fields of `self`.
+                let Some((left, top, width, height, tex)) = self.ensure_glyph(g.glyph_id) else {
+                    println!("Warning: glyph ID {} not found in font", g.glyph_id);
+                    continue;
+                };
 
                 let x_offset = hb_to_px(g.x_offset, px_size, units_per_em);
                 let y_offset = hb_to_px(g.y_offset, px_size, units_per_em);
 
-                let x = pen_x + x_offset + glyph.left as f32;
-                let y = baseline_y - y_offset - glyph.top as f32;
+                let x = pen_x + x_offset + left as f32;
+                let y = baseline_y - y_offset - top as f32;
 
-                let w = glyph.width as f32;
-                let h = glyph.height as f32;
+                let w = width as f32;
+                let h = height as f32;
 
                 if w > 0.0 && h > 0.0 {
                     let vertices = [
@@ -322,8 +320,10 @@ impl TextRenderer {
                         },
                     ];
 
+                    let gl = self.gl.as_ref();
+
                     gl.active_texture(glow::TEXTURE0);
-                    gl.bind_texture(glow::TEXTURE_2D, Some(glyph.tex));
+                    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
                     gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
                     gl.buffer_data_u8_slice(
@@ -335,9 +335,12 @@ impl TextRenderer {
                     gl.draw_arrays(glow::TRIANGLES, 0, 6);
                 }
 
-                pen_x += self._font_size.0; // use freetype advance for pen movement
+                // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
+                // we ignore the actual x_advance and just move the pen by the cell width.
+                pen_x += self.font_size_px.0;
             }
 
+            let gl = self.gl.as_ref();
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.use_program(None);
@@ -352,13 +355,17 @@ impl Drop for TextRenderer {
         unsafe {
             let gl = self.gl.as_ref();
 
-            for glyph in self.glyphs.borrow().values() {
+            for glyph in self.glyphs.values() {
                 gl.delete_texture(glyph.tex);
             }
 
             gl.delete_vertex_array(self.vao);
             gl.delete_buffer(self.vbo);
             gl.delete_program(self.program);
+
+            // Drop rb_face before releasing the font data it references.
+            ManuallyDrop::drop(&mut self.rb_face);
+            ManuallyDrop::drop(&mut self._font_data);
         }
     }
 }
