@@ -18,22 +18,37 @@ use glutin::{display::GetGlDisplay, prelude::*};
 use glutin_winit::{DisplayBuilder, GlWindow};
 
 use crate::{
+    font_registry::FontRegistry,
     renderers::{self, TextRenderer},
     text_manager::TextManager,
 };
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
+use std::time::Instant;
+
+macro_rules! time_it {
+    ($name:expr, $block:block) => {{
+        let name = $name;
+        let start = Instant::now();
+        let result = { $block };
+        let duration = start.elapsed();
+        println!("Executed {} in {} ms", name, duration.as_millis());
+        result
+    }};
+}
+
 const FONT_SIZE: u32 = 20;
 // const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 // const TEXT: &str = "a ---- <- -> <= << <= ------------ b";
 const TEXT: &str = "a -<- <= b🤔";
 
-pub struct App {
+pub struct App<'a> {
     gl_handler: GlHandler,
     state: Option<AppState>,
     gl: Option<Rc<glow::Context>>,
-    text_renderer: Option<TextRenderer>,
+    font_registry: FontRegistry,
+    text_renderer: Option<TextRenderer<'a>>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
     text_manager: Option<TextManager>,
@@ -45,12 +60,20 @@ struct AppState {
     window: Window,
 }
 
-impl App {
+impl<'a> App<'a> {
     pub fn new(template: ConfigTemplateBuilder, display_builder: DisplayBuilder) -> Self {
+        let mut font_registry = FontRegistry::new();
+
+        font_registry.register_font(
+            "CaskaydiaCoveNerdFont-Regular.ttf",
+            include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
+        );
+
         Self {
             gl_handler: GlHandler::new(template, display_builder),
             state: None,
             gl: None,
+            font_registry,
             text_renderer: None,
             triangle_renderer: None,
             quad_renderer: None,
@@ -66,7 +89,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl<'a> ApplicationHandler for App<'a> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let gl_window = self.gl_handler.get_or_create_gl_window(event_loop);
 
@@ -102,13 +125,23 @@ impl ApplicationHandler for App {
         self.triangle_renderer.get_or_insert_with(|| unsafe {
             renderers::TriangleRenderer::new(self.gl.as_ref().unwrap().clone())
         });
+        // self.text_renderer.get_or_insert_with(|| unsafe {
+        //     TextRenderer::new(
+        //         self.gl.as_ref().unwrap().clone(),
+        //         &self.font_registry,
+        //         FONT_SIZE,
+        //     )
+        // });
+
+        // FontRegistry must outlive TextRenderer
         self.text_renderer.get_or_insert_with(|| unsafe {
-            TextRenderer::new(
-                self.gl.as_ref().unwrap().clone(),
-                include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
-                FONT_SIZE,
-            )
+            // This is safe because the font registry is owned by the App struct
+            // and will not be dropped while the TextRenderer is still in use.
+            let font_registry: &'a FontRegistry = &*(&self.font_registry as *const _);
+
+            TextRenderer::<'a>::new(self.gl.as_ref().unwrap().clone(), &font_registry, FONT_SIZE)
         });
+
         self.quad_renderer.get_or_insert_with(|| unsafe {
             renderers::QuadRenderer::new(
                 self.gl.as_ref().unwrap().clone(),
@@ -138,15 +171,12 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
+                let start = Instant::now();
                 // Some platforms like EGL require resizing GL surface to update the size
                 // Notable platforms here are Wayland and macOS, other don't require it
                 // and the function is no-op, but it's wise to resize it for portability
                 // reasons.
-                if let Some(AppState {
-                    gl_surface,
-                    window: _,
-                }) = self.state.as_ref()
-                {
+                if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
                     gl_surface.resize(
                         gl_context,
@@ -157,70 +187,88 @@ impl ApplicationHandler for App {
                     unsafe {
                         let font_size = self.text_renderer.as_ref().unwrap().font_size();
 
-                        self.text_manager = Some(TextManager::new(
-                            font_size.0 as i32,
-                            font_size.1 as i32,
-                            size.width as i32,
-                            size.height as i32,
-                        ));
+                        time_it!("Recreating text manager on resize", {
+                            self.text_manager = Some(TextManager::new(
+                                font_size.0 as i32,
+                                font_size.1 as i32,
+                                size.width as i32,
+                                size.height as i32,
+                            ));
+                        });
 
-                        self.quad_renderer = Some(renderers::QuadRenderer::new(
-                            self.gl.as_ref().unwrap().clone(),
-                            size.width as i32,
-                            size.height as i32,
-                        ));
+                        time_it!("Recreating quad renderer on resize", {
+                            self.quad_renderer = Some(renderers::QuadRenderer::new(
+                                self.gl.as_ref().unwrap().clone(),
+                                size.width as i32,
+                                size.height as i32,
+                            ));
+                        });
 
-                        self.gl()
-                            .viewport(0, 0, size.width as i32, size.height as i32);
+                        time_it!("Updating viewport on resize", {
+                            self.gl()
+                                .viewport(0, 0, size.width as i32, size.height as i32);
+                        });
+
                         let proj = ortho(size.width as f32, size.height as f32);
 
                         let text_manager = self.text_manager.as_ref().unwrap();
 
                         let chars = &TEXT.chars().collect::<Vec<_>>();
 
-                        self.quad_renderer.as_ref().unwrap().with(|| {
-                            let mut index = 0;
+                        time_it!("Redrawing text on resize", {
+                            self.quad_renderer.as_ref().unwrap().with(|| {
+                                let mut index = 0;
 
-                            for row in 0..text_manager.rows {
-                                let mut col = 0;
+                                for row in 0..text_manager.rows {
+                                    let mut col = 0;
 
-                                while col <= text_manager.cols as usize {
-                                    let text_size =
-                                        (chars.len() - index).min(text_manager.cols as usize - col);
-                                    if text_size == 0 {
-                                        break;
-                                    }
+                                    while col <= text_manager.cols as usize {
+                                        let text_size = (chars.len() - index)
+                                            .min(text_manager.cols as usize - col);
+                                        if text_size == 0 {
+                                            break;
+                                        }
 
-                                    let string =
-                                        chars[index..index + text_size].iter().collect::<String>();
+                                        let string = chars[index..index + text_size]
+                                            .iter()
+                                            .collect::<String>();
 
-                                    let cell_position =
-                                        text_manager.get_cell_position(row, col as i32);
+                                        let cell_position =
+                                            text_manager.get_cell_position(row, col as i32);
 
-                                    self.text_renderer.as_mut().unwrap().draw_text(
-                                        &string,
-                                        cell_position.x as f32,
-                                        cell_position.y as f32,
-                                        [1.0, 1.0, 1.0],
-                                        &proj,
-                                    );
+                                        time_it!("Drawing text on resize", {
+                                            self.text_renderer.as_mut().unwrap().draw_text(
+                                                &string,
+                                                cell_position.x as f32,
+                                                cell_position.y as f32,
+                                                [1.0, 1.0, 1.0],
+                                                &proj,
+                                            );
+                                        });
 
-                                    col += text_size;
-                                    index += text_size;
+                                        col += text_size;
+                                        index += text_size;
 
-                                    if index >= chars.len() {
-                                        index %= chars.len();
+                                        if index >= chars.len() {
+                                            index %= chars.len();
+                                        }
                                     }
                                 }
-                            }
+                            });
                         });
                     }
+
+                    window.request_redraw();
                 }
+
+                let duration = start.elapsed();
+                println!("Resized in {} ms", duration.as_millis());
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                let start = Instant::now();
                 if let Some(AppState { gl_surface, window }) = &self.state {
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
 
@@ -248,7 +296,11 @@ impl ApplicationHandler for App {
 
                     gl_surface.swap_buffers(gl_context).unwrap();
                 }
+
+                let duration = start.elapsed();
+                println!("Redrawn in {} ms", duration.as_millis());
             }
+
             WindowEvent::MouseInput {
                 device_id: _device_id,
                 state,
@@ -285,7 +337,7 @@ impl ApplicationHandler for App {
                         self.text_index += 1;
                     }
 
-                    window.request_redraw();
+                    // window.request_redraw();
                 }
             }
             _ => (),

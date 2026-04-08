@@ -1,12 +1,17 @@
 use std::collections::HashMap;
-use std::mem::{ManuallyDrop, offset_of, size_of};
+use std::mem::{offset_of, size_of};
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
 use rustybuzz::{Face as RbFace, UnicodeBuffer};
 
+use crate::font_registry::FontRegistry;
 use crate::macros::macs::include_shader;
+
+static FT_LIB: LazyLock<Library> =
+    LazyLock::new(|| Library::init().expect("failed to initialize FreeType library"));
 
 pub struct ShapedGlyph {
     pub glyph_id: u32,
@@ -38,14 +43,12 @@ struct GlyphTexture {
     top: i32,
 }
 
-pub struct TextRenderer {
+pub struct TextRenderer<'a> {
     gl: Rc<glow::Context>,
     // font_data must outlive rb_face; both are dropped explicitly in Drop (rb_face first)
-    _font_data: ManuallyDrop<Box<[u8]>>,
-    // Keep the FreeType library alive as long as ft_face is live
-    _ft_lib: Library,
+    font_registry: &'a FontRegistry,
     ft_face: freetype::Face,
-    rb_face: ManuallyDrop<RbFace<'static>>,
+    rb_face: RbFace<'a>,
 
     glyphs: HashMap<u32, GlyphTexture>,
 
@@ -60,7 +63,7 @@ pub struct TextRenderer {
     px_size: f32,
 }
 
-impl TextRenderer {
+impl<'a> TextRenderer<'a> {
     pub fn units_per_em(&self) -> f32 {
         self.rb_face.units_per_em() as f32
     }
@@ -71,18 +74,25 @@ impl TextRenderer {
         self.font_size_px
     }
 
-    pub unsafe fn new(gl: Rc<glow::Context>, font_bytes: &[u8], px_size: u32) -> Self {
+    pub unsafe fn new(
+        gl: Rc<glow::Context>,
+        font_registry: &'a FontRegistry,
+        px_size: u32,
+    ) -> Self {
         // Box the font bytes so they can be freed when the renderer is dropped.
-        let font_data: Box<[u8]> = font_bytes.to_vec().into_boxed_slice();
+        let font_data: &[u8] = font_registry
+            .get_fonts()
+            .first()
+            .expect("no fonts registered")
+            .bytes
+            .as_slice();
+
         // SAFETY: we extend the lifetime to 'static here, but we guarantee that
         // rb_face (which borrows this data) is dropped before font_data in our Drop impl.
-        let font_data_static: &'static [u8] = unsafe { &*(&*font_data as *const [u8]) };
-        let rb_face =
-            RbFace::from_slice(font_data_static, 0).expect("failed to create rustybuzz face");
+        let rb_face = RbFace::from_slice(font_data, 0).expect("failed to create rustybuzz face");
 
-        let ft_lib = Library::init().expect("failed to init freetype");
-        let ft_face = ft_lib
-            .new_memory_face(font_bytes.to_vec(), 0)
+        let ft_face = FT_LIB
+            .new_memory_face(font_data.to_vec(), 0)
             .expect("failed to load freetype face");
         ft_face
             .set_pixel_sizes(0, px_size)
@@ -106,10 +116,9 @@ impl TextRenderer {
 
         Self {
             gl,
-            _font_data: ManuallyDrop::new(font_data),
-            _ft_lib: ft_lib,
+            font_registry,
             ft_face,
-            rb_face: ManuallyDrop::new(rb_face),
+            rb_face,
             glyphs: HashMap::new(),
             program,
             vao,
@@ -350,7 +359,7 @@ impl TextRenderer {
     }
 }
 
-impl Drop for TextRenderer {
+impl<'a> Drop for TextRenderer<'a> {
     fn drop(&mut self) {
         unsafe {
             let gl = self.gl.as_ref();
@@ -364,8 +373,8 @@ impl Drop for TextRenderer {
             gl.delete_program(self.program);
 
             // Drop rb_face before releasing the font data it references.
-            ManuallyDrop::drop(&mut self.rb_face);
-            ManuallyDrop::drop(&mut self._font_data);
+            // ManuallyDrop::drop(&mut self.rb_face);
+            // ManuallyDrop::drop(&mut self._font_data);
         }
     }
 }

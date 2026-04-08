@@ -1,4 +1,5 @@
 mod app;
+mod font_registry;
 mod gl_handler;
 mod macros;
 mod renderers;
