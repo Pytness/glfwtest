@@ -153,6 +153,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 font_size.1 as i32,
                 window.inner_size().width as i32,
                 window.inner_size().height as i32,
+                8,
             )
         });
 
@@ -189,6 +190,7 @@ impl<'a> ApplicationHandler for App<'a> {
                             font_size.1 as i32,
                             size.width as i32,
                             size.height as i32,
+                            8,
                         ));
 
                         println!(

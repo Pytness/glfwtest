@@ -41,10 +41,17 @@ pub struct TextManager {
     pub window_height: i32,
     pub rows: i32,
     pub cols: i32,
+    pub border_px: i32,
 }
 
 impl TextManager {
-    pub fn new(font_width: i32, font_height: i32, window_width: i32, window_height: i32) -> Self {
+    pub fn new(
+        font_width: i32,
+        font_height: i32,
+        window_width: i32,
+        window_height: i32,
+        border_px: i32,
+    ) -> Self {
         let cols = window_width / font_width;
         let rows = window_height / font_height;
 
@@ -55,6 +62,7 @@ impl TextManager {
             window_height,
             rows,
             cols,
+            border_px,
         }
     }
 
@@ -69,10 +77,10 @@ impl TextManager {
     }
 
     pub fn get_cell_position(&self, row: i32, col: i32) -> CellPosition {
-        let x = col * self.font_width;
+        let x = col * self.font_width + self.border_px;
         // Add font_height to y to account for rendering starting from the baseline,
         // so we want to position the text such that it fits within the cell.
-        let y = row * self.font_height + self.font_height;
+        let y = row * self.font_height + self.font_height + self.border_px;
 
         CellPosition { x, y }
     }
