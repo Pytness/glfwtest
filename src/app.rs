@@ -20,17 +20,17 @@ use glutin_winit::{DisplayBuilder, GlWindow};
 use crate::{
     font_registry::FontRegistry,
     renderers::{self, TextRenderer},
-    text_manager::TextManager,
+    text_manager::{TermGlyph, TextManager},
 };
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 use std::time::Instant;
 
-const FONT_SIZE: u32 = 20;
-// const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
-// const TEXT: &str = "a ---- <- -> <= << <= ------------ b";
-const TEXT: &str = "a -<- <= b🤔";
+const FONT_SIZE: u32 = 40;
+// const TEXT: &str = "-<- <= b🤔";
+// const TEXT: &str = "-<-<=_";
+const TEXT: &str = " NORMAL  ";
 
 pub struct App<'a> {
     gl_handler: GlHandler,
@@ -128,7 +128,14 @@ impl<'a> ApplicationHandler for App<'a> {
             // and will not be dropped while the TextRenderer is still in use.
             let font_registry: &'a FontRegistry = &*(&self.font_registry as *const _);
 
-            TextRenderer::<'a>::new(self.gl.as_ref().unwrap().clone(), &font_registry, FONT_SIZE)
+            let width = window.inner_size().width as i32;
+            let height = window.inner_size().height as i32;
+            TextRenderer::<'a>::new(
+                self.gl.as_ref().unwrap().clone(),
+                &font_registry,
+                FONT_SIZE,
+                (width, height),
+            )
         });
 
         self.quad_renderer.get_or_insert_with(|| unsafe {
@@ -173,6 +180,7 @@ impl<'a> ApplicationHandler for App<'a> {
                         NonZeroU32::new(size.height).unwrap(),
                     );
 
+                    println!("REDRAWING -----------------------------------V");
                     unsafe {
                         let font_size = self.text_renderer.as_ref().unwrap().font_size();
 
@@ -183,58 +191,65 @@ impl<'a> ApplicationHandler for App<'a> {
                             size.height as i32,
                         ));
 
+                        println!(
+                            "!!!Cell size: {}x{}",
+                            font_size.0 as i32, font_size.1 as i32
+                        );
+
                         self.quad_renderer = Some(renderers::QuadRenderer::new(
                             self.gl.as_ref().unwrap().clone(),
                             size.width as i32,
                             size.height as i32,
                         ));
 
+                        self.text_renderer
+                            .as_mut()
+                            .unwrap()
+                            .set_viewport(size.width as i32, size.height as i32);
+
                         self.gl()
                             .viewport(0, 0, size.width as i32, size.height as i32);
 
-                        let proj = ortho(size.width as f32, size.height as f32);
-
-                        let text_manager = self.text_manager.as_ref().unwrap();
-
                         let chars = &TEXT.chars().collect::<Vec<_>>();
 
-                        let mut string_buffer = String::with_capacity(TEXT.len());
-
-                        self.quad_renderer.as_ref().unwrap().with(|| {
-                            let mut index = 0;
-
-                            for row in 0..text_manager.rows {
-                                let mut col = 0;
-
-                                while col <= text_manager.cols as usize {
-                                    let text_size =
-                                        (chars.len() - index).min(text_manager.cols as usize - col);
-                                    if text_size == 0 {
-                                        break;
+                        let glyphs: Vec<TermGlyph> = chars
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &c)| {
+                                if c.is_whitespace() || c.is_alphabetic() {
+                                    TermGlyph {
+                                        char: c,
+                                        bg_color: (255, 255, 255),
+                                        fg_color: (0, 0, 0),
                                     }
-
-                                    string_buffer.clear();
-                                    string_buffer.extend(&chars[index..index + text_size]);
-
-                                    let cell_position =
-                                        text_manager.get_cell_position(row, col as i32);
-
-                                    self.text_renderer.as_mut().unwrap().draw_text(
-                                        &string_buffer,
-                                        cell_position.x as f32,
-                                        cell_position.y as f32,
-                                        [1.0, 1.0, 1.0],
-                                        &proj,
-                                    );
-
-                                    col += text_size;
-                                    index += text_size;
-
-                                    if index >= chars.len() {
-                                        index %= chars.len();
+                                } else {
+                                    TermGlyph {
+                                        char: c,
+                                        fg_color: (255, 255, 255),
+                                        bg_color: (0, 0, 0),
                                     }
                                 }
-                            }
+                            })
+                            .collect();
+
+                        self.quad_renderer.as_ref().unwrap().with(|| {
+                            let proj = ortho(size.width as f32, size.height as f32);
+
+                            self.text_renderer.as_mut().unwrap().draw_glyphs(
+                                &glyphs,
+                                0,
+                                0,
+                                &proj,
+                                size.height as i32,
+                            );
+
+                            // self.text_renderer.as_mut().unwrap().draw_glyphs(
+                            //     &glyphs,
+                            //     1,
+                            //     0,
+                            //     &proj,
+                            //     size.height as i32,
+                            // );
                         });
                     }
 

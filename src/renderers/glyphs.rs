@@ -9,6 +9,7 @@ use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
 
 use crate::font_registry::FontRegistry;
 use crate::macros::macs::include_shader;
+use crate::text_manager::{TermGlyph, TextManager};
 
 static FT_LIB: LazyLock<Library> =
     LazyLock::new(|| Library::init().expect("failed to initialize FreeType library"));
@@ -50,6 +51,8 @@ pub struct TextRenderer<'a> {
     ft_face: freetype::Face,
     rb_face: RbFace<'a>,
 
+    text_manager: TextManager,
+
     glyphs: HashMap<u32, GlyphTexture>,
 
     program: glow::NativeProgram,
@@ -58,8 +61,9 @@ pub struct TextRenderer<'a> {
 
     u_proj: Option<glow::NativeUniformLocation>,
     u_color: Option<glow::NativeUniformLocation>,
+    u_background_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
-    font_size_px: (f32, f32),
+    font_size_px: (f32, f32, f32), // (cell_width, cell_height, descender)
     px_size: f32,
     shape_plan: ShapePlan,
     shape_buffer: Option<UnicodeBuffer>,
@@ -72,7 +76,7 @@ impl<'a> TextRenderer<'a> {
 
     /// Returns (width, height) of the font at the current pixel size.
     /// This is not the same as the maximum glyph size, but can be used for layout purposes.
-    pub fn font_size(&self) -> (f32, f32) {
+    pub fn font_size(&self) -> (f32, f32, f32) {
         self.font_size_px
     }
 
@@ -80,6 +84,7 @@ impl<'a> TextRenderer<'a> {
         gl: Rc<glow::Context>,
         font_registry: &'a FontRegistry,
         px_size: u32,
+        size: (i32, i32),
     ) -> Self {
         // Box the font bytes so they can be freed when the renderer is dropped.
         let font_data: &[u8] = font_registry
@@ -100,13 +105,18 @@ impl<'a> TextRenderer<'a> {
             .set_pixel_sizes(0, px_size)
             .expect("failed to set pixel size");
 
-        let shape_plan =
-            ShapePlan::new(&rb_face, rustybuzz::Direction::LeftToRight, None, None, &[]);
+        let shape_plan = ShapePlan::new(
+            &rb_face,
+            rustybuzz::Direction::LeftToRight,
+            Some(rustybuzz::script::LATIN),
+            None,
+            &[],
+        );
 
         let metrics = ft_face.size_metrics().expect("failed to get size metrics");
         let cell_width = metrics.max_advance as f32 / 64.0;
         let cell_height = metrics.height as f32 / 64.0;
-        let font_size_px = (cell_width, cell_height);
+        let font_size_px = (cell_width, cell_height, metrics.descender as f32 / 64.0);
 
         // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
         // implicitly permit unsafe calls without an unsafe{} block.
@@ -117,24 +127,52 @@ impl<'a> TextRenderer<'a> {
 
         let u_proj = unsafe { gl.get_uniform_location(program, "u_proj") };
         let u_color = unsafe { gl.get_uniform_location(program, "u_text_color") };
+        let u_background_color = unsafe { gl.get_uniform_location(program, "u_background_color") };
         let u_tex = unsafe { gl.get_uniform_location(program, "u_font") };
+
+        let text_manager = TextManager::new(
+            font_size_px.0.ceil() as i32,
+            font_size_px.1.ceil() as i32,
+            size.0,
+            size.1,
+        );
 
         Self {
             gl,
             font_registry,
             ft_face,
             rb_face,
+            text_manager,
             glyphs: HashMap::new(),
             program,
             vao,
             vbo,
             u_proj,
+            u_background_color,
             u_color,
             u_tex,
             font_size_px,
             px_size: px_size as f32,
             shape_plan,
             shape_buffer: Some(UnicodeBuffer::new()),
+        }
+    }
+
+    pub fn clear_section(&self, x: i32, y: i32, width: i32, height: i32, color: [f32; 4]) {
+        let y = self.text_manager.window_height - y; // Convert from top-left to bottom-left origin
+
+        println!(
+            "Clearing section at ({}, {}) with size {}x{}",
+            x, y, width, height
+        );
+        unsafe {
+            let gl = self.gl.as_ref();
+            gl.enable(glow::SCISSOR_TEST);
+
+            gl.scissor(x, y, width, height);
+            gl.clear_color(color[0], color[1], color[2], 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.disable(glow::SCISSOR_TEST);
         }
     }
 
@@ -308,8 +346,10 @@ impl<'a> TextRenderer<'a> {
                     continue;
                 };
 
-                let x_offset = hb_to_px(g.x_offset, px_size, units_per_em);
-                let y_offset = hb_to_px(g.y_offset, px_size, units_per_em);
+                // let x_offset = hb_to_px(g.x_offset, px_size, units_per_em);
+                // let y_offset = hb_to_px(g.y_offset, px_size, units_per_em);
+                let x_offset = g.x_offset;
+                let y_offset = g.y_offset;
 
                 let x = pen_x + x_offset + left as f32;
                 let y = baseline_y - y_offset - top as f32;
@@ -370,6 +410,188 @@ impl<'a> TextRenderer<'a> {
 
             shaped.len()
         }
+    }
+
+    pub unsafe fn draw_glyphs_bg(&self, glyphs: &[TermGlyph], row: i32, col: i32) {
+        for (i, g) in glyphs.iter().enumerate() {
+            let cell_box = self.text_manager.get_cell_box(row, col + i as i32);
+            let bg_color = [
+                g.bg_color.0 as f32 / 255.0,
+                g.bg_color.1 as f32 / 255.0,
+                g.bg_color.2 as f32 / 255.0,
+            ];
+            self.clear_section(
+                cell_box.x,
+                cell_box.y,
+                cell_box.width,
+                cell_box.height,
+                [bg_color[0], bg_color[1], bg_color[2], 1.0],
+            );
+        }
+    }
+
+    pub unsafe fn draw_glyphs(
+        &mut self,
+        glyphs: &[TermGlyph],
+        row: i32,
+        mut col: i32,
+        proj: &[f32; 16],
+        screen_height: i32,
+    ) {
+        let cell_box = self.text_manager.get_cell_box(row, col);
+
+        let mut pen_x: f32 = cell_box.x as f32;
+        let baseline_y: f32 = cell_box.y as f32;
+
+        let text = glyphs.iter().map(|g| g.char).collect::<String>();
+        let shaped = self.shape_text(&text);
+        let units_per_em = self.units_per_em();
+        let px_size = self.px_size;
+
+        let stride = size_of::<Vertex>() as i32;
+        let uv_offset = offset_of!(Vertex, uv) as i32;
+
+        let glyphs_iter = glyphs.iter().zip(shaped.iter());
+
+        unsafe {
+            self.draw_glyphs_bg(glyphs, row, col);
+            let gl = self.gl.as_ref();
+
+            gl.bind_vertex_array(Some(self.vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+
+            gl.enable_vertex_attrib_array(0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0);
+
+            gl.enable_vertex_attrib_array(1);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, uv_offset);
+
+            gl.use_program(Some(self.program));
+
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+
+            gl.uniform_matrix_4_f32_slice(self.u_proj.as_ref(), false, proj);
+            gl.uniform_1_i32(self.u_tex.as_ref(), 0);
+
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            for (term_g, shaped_g) in glyphs_iter {
+                // Extract all glyph data as owned/Copy values so the borrow on
+                // `self.glyphs` ends before we re-access other fields of `self`.
+                let Some((mut left, mut top, width, mut height, tex)) =
+                    self.ensure_glyph(shaped_g.glyph_id)
+                else {
+                    println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
+                    continue;
+                };
+
+                // Clip glyphs that would render outside the cell
+                // if top - height < 0 {
+                //     top = height;
+                // }
+
+                println!(
+                    "Glyph ID {} ({}): left {}, top {}, width {}, height {}",
+                    shaped_g.glyph_id, term_g.char, left, top, width, height
+                );
+
+                let x_offset = hb_to_px(shaped_g.x_offset, px_size, units_per_em);
+                let y_offset = hb_to_px(shaped_g.y_offset, px_size, units_per_em);
+
+                if left < 0 {
+                    left = 0;
+                }
+
+                let x = pen_x + x_offset + left as f32;
+                let y = baseline_y - y_offset - top as f32 + self.font_size_px.2; // Adjust for descender
+
+                let w = width as f32;
+                let h = height as f32;
+
+                println!(
+                    "Drawing glyph {} at ({}, {}) with size {}x{}, offset ({}, {})",
+                    shaped_g.glyph_id, x, y, w, h, x_offset, y_offset
+                );
+
+                let fg_color = [
+                    term_g.fg_color.0 as f32 / 255.0,
+                    term_g.fg_color.1 as f32 / 255.0,
+                    term_g.fg_color.2 as f32 / 255.0,
+                ];
+                let bg_color = [
+                    term_g.bg_color.0 as f32 / 255.0,
+                    term_g.bg_color.1 as f32 / 255.0,
+                    term_g.bg_color.2 as f32 / 255.0,
+                ];
+
+                if w > 0.0 && h > 0.0 {
+                    let vertices = [
+                        Vertex {
+                            pos: [x, y],
+                            uv: [0.0, 0.0],
+                        },
+                        Vertex {
+                            pos: [x + w, y],
+                            uv: [1.0, 0.0],
+                        },
+                        Vertex {
+                            pos: [x + w, y + h],
+                            uv: [1.0, 1.0],
+                        },
+                        Vertex {
+                            pos: [x, y],
+                            uv: [0.0, 0.0],
+                        },
+                        Vertex {
+                            pos: [x + w, y + h],
+                            uv: [1.0, 1.0],
+                        },
+                        Vertex {
+                            pos: [x, y + h],
+                            uv: [0.0, 1.0],
+                        },
+                    ];
+                    let gl = self.gl.as_ref();
+
+                    gl.uniform_3_f32(self.u_color.as_ref(), fg_color[0], fg_color[1], fg_color[2]);
+                    gl.uniform_3_f32(
+                        self.u_background_color.as_ref(),
+                        bg_color[0],
+                        bg_color[1],
+                        bg_color[2],
+                    );
+                    gl.active_texture(glow::TEXTURE0);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+
+                    gl.buffer_data_u8_slice(
+                        glow::ARRAY_BUFFER,
+                        bytemuck::cast_slice(&vertices),
+                        glow::DYNAMIC_DRAW,
+                    );
+
+                    gl.draw_arrays(glow::TRIANGLES, 0, 6);
+                }
+
+                // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
+                // we ignore the actual x_advance and just move the pen by the cell width.
+                pen_x += self.font_size_px.0;
+                col += 1;
+            }
+
+            let gl = self.gl.as_ref();
+            gl.bind_vertex_array(None);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            gl.use_program(None);
+        }
+    }
+
+    pub fn set_viewport(&mut self, width: i32, height: i32) {
+        self.text_manager.set_window_size(width, height);
     }
 }
 

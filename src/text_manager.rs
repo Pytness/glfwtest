@@ -1,3 +1,27 @@
+use bitflags::bitflags;
+
+bitflags! {
+    pub struct TermGlyphMode: u8 {
+        const Normal = 0;
+        // const Bold = 1 << 0;
+        // const Italic = 1 << 1;
+        // const Underline = 1 << 2;
+        // const Blink = 1 << 3;
+        // const Inverse = 1 << 4;
+        // const Invisible = 1 << 5;
+    }
+}
+pub enum TermGlyphDecoration {}
+
+#[derive(Clone, Copy)]
+pub struct TermGlyph {
+    pub char: char,
+    pub fg_color: (u8, u8, u8),
+    pub bg_color: (u8, u8, u8),
+    // pub mode: TermGlyphMode,
+    // pub decoration: TermGlyphDecoration,
+}
+
 pub struct CellPosition {
     pub x: i32,
     pub y: i32,
@@ -13,6 +37,8 @@ pub struct CellBox {
 pub struct TextManager {
     pub font_width: i32,
     pub font_height: i32,
+    pub window_width: i32,
+    pub window_height: i32,
     pub rows: i32,
     pub cols: i32,
 }
@@ -25,9 +51,21 @@ impl TextManager {
         Self {
             font_width,
             font_height,
+            window_width,
+            window_height,
             rows,
             cols,
         }
+    }
+
+    pub fn set_window_size(&mut self, width: i32, height: i32) {
+        let cols = width / self.font_width;
+        let rows = height / self.font_height;
+
+        self.window_width = width;
+        self.window_height = height;
+        self.rows = rows;
+        self.cols = cols;
     }
 
     pub fn get_cell_position(&self, row: i32, col: i32) -> CellPosition {
