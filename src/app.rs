@@ -132,7 +132,7 @@ impl<'a> ApplicationHandler for App<'a> {
             let height = window.inner_size().height as i32;
             TextRenderer::<'a>::new(
                 self.gl.as_ref().unwrap().clone(),
-                &font_registry,
+                font_registry,
                 FONT_SIZE,
                 (width, height),
             )
@@ -215,7 +215,7 @@ impl<'a> ApplicationHandler for App<'a> {
                         let glyphs: Vec<TermGlyph> = chars
                             .iter()
                             .enumerate()
-                            .map(|(i, &c)| {
+                            .map(|(_i, &c)| {
                                 if c.is_whitespace() || c.is_alphabetic() {
                                     TermGlyph {
                                         char: c,
@@ -235,13 +235,10 @@ impl<'a> ApplicationHandler for App<'a> {
                         self.quad_renderer.as_ref().unwrap().with(|| {
                             let proj = ortho(size.width as f32, size.height as f32);
 
-                            self.text_renderer.as_mut().unwrap().draw_glyphs(
-                                &glyphs,
-                                0,
-                                0,
-                                &proj,
-                                size.height as i32,
-                            );
+                            self.text_renderer
+                                .as_mut()
+                                .unwrap()
+                                .draw_glyphs(&glyphs, 0, 0, &proj);
 
                             // self.text_renderer.as_mut().unwrap().draw_glyphs(
                             //     &glyphs,
@@ -264,7 +261,11 @@ impl<'a> ApplicationHandler for App<'a> {
             }
             WindowEvent::RedrawRequested => {
                 let start = Instant::now();
-                if let Some(AppState { gl_surface, window }) = &self.state {
+                if let Some(AppState {
+                    gl_surface,
+                    window: _,
+                }) = &self.state
+                {
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
 
                     unsafe {

@@ -305,8 +305,8 @@ impl<'a> TextRenderer<'a> {
         proj: &[f32; 16],
     ) -> usize {
         let shaped = self.shape_text(text);
-        let units_per_em = self.units_per_em();
-        let px_size = self.px_size;
+        let _units_per_em = self.units_per_em();
+        let _px_size = self.px_size;
 
         let stride = size_of::<Vertex>() as i32;
         let uv_offset = offset_of!(Vertex, uv) as i32;
@@ -434,9 +434,8 @@ impl<'a> TextRenderer<'a> {
         &mut self,
         glyphs: &[TermGlyph],
         row: i32,
-        mut col: i32,
+        col: i32,
         proj: &[f32; 16],
-        screen_height: i32,
     ) {
         let cell_box = self.text_manager.get_cell_box(row, col);
 
@@ -483,7 +482,7 @@ impl<'a> TextRenderer<'a> {
             for (term_g, shaped_g) in glyphs_iter {
                 // Extract all glyph data as owned/Copy values so the borrow on
                 // `self.glyphs` ends before we re-access other fields of `self`.
-                let Some((mut left, mut top, width, mut height, tex)) =
+                let Some((mut left, top, width, height, tex)) =
                     self.ensure_glyph(shaped_g.glyph_id)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
@@ -580,7 +579,6 @@ impl<'a> TextRenderer<'a> {
                 // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
                 // we ignore the actual x_advance and just move the pen by the cell width.
                 pen_x += self.font_size_px.0;
-                col += 1;
             }
 
             let gl = self.gl.as_ref();
