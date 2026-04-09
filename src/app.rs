@@ -27,17 +27,6 @@ use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 use std::time::Instant;
 
-macro_rules! time_it {
-    ($name:expr, $block:block) => {{
-        let name = $name;
-        let start = Instant::now();
-        let result = { $block };
-        let duration = start.elapsed();
-        println!("Executed {} in {} ms", name, duration.as_millis());
-        result
-    }};
-}
-
 const FONT_SIZE: u32 = 20;
 // const TEXT: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
 // const TEXT: &str = "a ---- <- -> <= << <= ------------ b";
@@ -187,27 +176,21 @@ impl<'a> ApplicationHandler for App<'a> {
                     unsafe {
                         let font_size = self.text_renderer.as_ref().unwrap().font_size();
 
-                        time_it!("Recreating text manager on resize", {
-                            self.text_manager = Some(TextManager::new(
-                                font_size.0 as i32,
-                                font_size.1 as i32,
-                                size.width as i32,
-                                size.height as i32,
-                            ));
-                        });
+                        self.text_manager = Some(TextManager::new(
+                            font_size.0 as i32,
+                            font_size.1 as i32,
+                            size.width as i32,
+                            size.height as i32,
+                        ));
 
-                        time_it!("Recreating quad renderer on resize", {
-                            self.quad_renderer = Some(renderers::QuadRenderer::new(
-                                self.gl.as_ref().unwrap().clone(),
-                                size.width as i32,
-                                size.height as i32,
-                            ));
-                        });
+                        self.quad_renderer = Some(renderers::QuadRenderer::new(
+                            self.gl.as_ref().unwrap().clone(),
+                            size.width as i32,
+                            size.height as i32,
+                        ));
 
-                        time_it!("Updating viewport on resize", {
-                            self.gl()
-                                .viewport(0, 0, size.width as i32, size.height as i32);
-                        });
+                        self.gl()
+                            .viewport(0, 0, size.width as i32, size.height as i32);
 
                         let proj = ortho(size.width as f32, size.height as f32);
 
@@ -215,46 +198,43 @@ impl<'a> ApplicationHandler for App<'a> {
 
                         let chars = &TEXT.chars().collect::<Vec<_>>();
 
-                        time_it!("Redrawing text on resize", {
-                            self.quad_renderer.as_ref().unwrap().with(|| {
-                                let mut index = 0;
+                        let mut string_buffer = String::with_capacity(TEXT.len());
 
-                                for row in 0..text_manager.rows {
-                                    let mut col = 0;
+                        self.quad_renderer.as_ref().unwrap().with(|| {
+                            let mut index = 0;
 
-                                    while col <= text_manager.cols as usize {
-                                        let text_size = (chars.len() - index)
-                                            .min(text_manager.cols as usize - col);
-                                        if text_size == 0 {
-                                            break;
-                                        }
+                            for row in 0..text_manager.rows {
+                                let mut col = 0;
 
-                                        let string = chars[index..index + text_size]
-                                            .iter()
-                                            .collect::<String>();
+                                while col <= text_manager.cols as usize {
+                                    let text_size =
+                                        (chars.len() - index).min(text_manager.cols as usize - col);
+                                    if text_size == 0 {
+                                        break;
+                                    }
 
-                                        let cell_position =
-                                            text_manager.get_cell_position(row, col as i32);
+                                    string_buffer.clear();
+                                    string_buffer.extend(&chars[index..index + text_size]);
 
-                                        time_it!("Drawing text on resize", {
-                                            self.text_renderer.as_mut().unwrap().draw_text(
-                                                &string,
-                                                cell_position.x as f32,
-                                                cell_position.y as f32,
-                                                [1.0, 1.0, 1.0],
-                                                &proj,
-                                            );
-                                        });
+                                    let cell_position =
+                                        text_manager.get_cell_position(row, col as i32);
 
-                                        col += text_size;
-                                        index += text_size;
+                                    self.text_renderer.as_mut().unwrap().draw_text(
+                                        &string_buffer,
+                                        cell_position.x as f32,
+                                        cell_position.y as f32,
+                                        [1.0, 1.0, 1.0],
+                                        &proj,
+                                    );
 
-                                        if index >= chars.len() {
-                                            index %= chars.len();
-                                        }
+                                    col += text_size;
+                                    index += text_size;
+
+                                    if index >= chars.len() {
+                                        index %= chars.len();
                                     }
                                 }
-                            });
+                            }
                         });
                     }
 

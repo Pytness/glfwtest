@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
-use rustybuzz::{Face as RbFace, UnicodeBuffer};
+use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
 
 use crate::font_registry::FontRegistry;
 use crate::macros::macs::include_shader;
@@ -61,6 +61,8 @@ pub struct TextRenderer<'a> {
     u_tex: Option<glow::NativeUniformLocation>,
     font_size_px: (f32, f32),
     px_size: f32,
+    shape_plan: ShapePlan,
+    shape_buffer: Option<UnicodeBuffer>,
 }
 
 impl<'a> TextRenderer<'a> {
@@ -98,6 +100,9 @@ impl<'a> TextRenderer<'a> {
             .set_pixel_sizes(0, px_size)
             .expect("failed to set pixel size");
 
+        let shape_plan =
+            ShapePlan::new(&rb_face, rustybuzz::Direction::LeftToRight, None, None, &[]);
+
         let metrics = ft_face.size_metrics().expect("failed to get size metrics");
         let cell_width = metrics.max_advance as f32 / 64.0;
         let cell_height = metrics.height as f32 / 64.0;
@@ -128,18 +133,24 @@ impl<'a> TextRenderer<'a> {
             u_tex,
             font_size_px,
             px_size: px_size as f32,
+            shape_plan,
+            shape_buffer: Some(UnicodeBuffer::new()),
         }
     }
 
-    pub fn shape_text(&self, text: &str) -> Vec<ShapedGlyph> {
-        let mut buffer = UnicodeBuffer::new();
+    pub fn shape_text(&mut self, text: &str) -> Vec<ShapedGlyph> {
+        let mut buffer = self
+            .shape_buffer
+            .take()
+            .expect("shape_buffer already in use");
+
         buffer.push_str(text);
 
-        let shaped = rustybuzz::shape(&self.rb_face, &[], buffer);
+        let shaped = rustybuzz::shape_with_plan(&self.rb_face, &self.shape_plan, buffer);
 
         let infos = shaped.glyph_infos();
         let positions = shaped.glyph_positions();
-        infos
+        let glyphs = infos
             .iter()
             .zip(positions.iter())
             .map(|(info, pos)| ShapedGlyph {
@@ -150,7 +161,11 @@ impl<'a> TextRenderer<'a> {
                 x_offset: pos.x_offset as f32,
                 y_offset: pos.y_offset as f32,
             })
-            .collect()
+            .collect();
+
+        self.shape_buffer = Some(shaped.clear());
+
+        glyphs
     }
 
     /// Ensures the glyph is loaded and cached.
@@ -284,6 +299,7 @@ impl<'a> TextRenderer<'a> {
             gl.uniform_3_f32(self.u_color.as_ref(), color[0], color[1], color[2]);
             gl.uniform_1_i32(self.u_tex.as_ref(), 0);
 
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             for g in &shaped {
                 // Extract all glyph data as owned/Copy values so the borrow on
                 // `self.glyphs` ends before we re-access other fields of `self`.
@@ -330,11 +346,9 @@ impl<'a> TextRenderer<'a> {
                     ];
 
                     let gl = self.gl.as_ref();
-
                     gl.active_texture(glow::TEXTURE0);
                     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
-                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
                     gl.buffer_data_u8_slice(
                         glow::ARRAY_BUFFER,
                         bytemuck::cast_slice(&vertices),
