@@ -116,7 +116,8 @@ impl<'a> TextRenderer<'a> {
         let metrics = ft_face.size_metrics().expect("failed to get size metrics");
         let cell_width = metrics.max_advance as f32 / 64.0;
         let cell_height = metrics.height as f32 / 64.0;
-        let font_size_px = (cell_width, cell_height, metrics.descender as f32 / 64.0);
+        let descender = metrics.descender as f32 / 64.0;
+        let font_size_px = (cell_width, cell_height, descender);
 
         // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
         // implicitly permit unsafe calls without an unsafe{} block.
@@ -233,14 +234,17 @@ impl<'a> TextRenderer<'a> {
         ft_face
             .load_glyph(
                 glyph_id,
-                LoadFlag::RENDER | LoadFlag::TARGET_NORMAL | LoadFlag::FORCE_AUTOHINT,
+                LoadFlag::RENDER
+                    | LoadFlag::TARGET_NORMAL
+                    | LoadFlag::FORCE_AUTOHINT
+                    | LoadFlag::TARGET_LCD,
             )
             .expect("freetype load_glyph failed");
 
         let slot = ft_face.glyph();
         let bitmap = slot.bitmap();
 
-        let width = bitmap.width();
+        let width = bitmap.width() / 3;
         let height = bitmap.rows();
         let left = slot.bitmap_left();
         let top = slot.bitmap_top();
@@ -252,15 +256,15 @@ impl<'a> TextRenderer<'a> {
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
             // Grayscale bitmap: one byte per pixel, no alignment padding needed.
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::R8 as i32,
+                glow::RGB8 as i32,
                 width,
                 height,
                 0,
-                glow::RED,
+                glow::RGB,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
             );
