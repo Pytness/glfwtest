@@ -80,6 +80,34 @@ impl<'a> TextRenderer<'a> {
         self.font_size_px
     }
 
+    pub fn update_font_size(&mut self, px_size: u32, dpi: u32) {
+        self.ft_face
+            .set_char_size(0, (px_size * 64) as isize, dpi, dpi)
+            .expect("failed to set pixel size");
+
+        let metrics = self
+            .ft_face
+            .size_metrics()
+            .expect("failed to get size metrics");
+
+        let cell_width = metrics.max_advance as f32 / 64.0;
+        let cell_height = metrics.height as f32 / 64.0;
+        let descender = metrics.descender as f32 / 64.0;
+
+        self.font_size_px = (cell_width, cell_height, descender);
+        self.px_size = px_size as f32;
+
+        self.text_manager = TextManager::new(
+            cell_width.ceil() as i32,
+            cell_height.ceil() as i32,
+            self.text_manager.window_width,
+            self.text_manager.window_height,
+            4,
+        );
+
+        self.glyphs.clear();
+    }
+
     pub unsafe fn new(
         gl: Rc<glow::Context>,
         font_registry: &'a FontRegistry,
@@ -102,7 +130,7 @@ impl<'a> TextRenderer<'a> {
             .new_memory_face(font_data.to_vec(), 0)
             .expect("failed to load freetype face");
         ft_face
-            .set_pixel_sizes(0, px_size)
+            .set_char_size(0, (px_size * 64) as isize, 96, 96)
             .expect("failed to set pixel size");
 
         let shape_plan = ShapePlan::new(
