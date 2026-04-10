@@ -164,7 +164,7 @@ impl<'a> TextRenderer<'a> {
             font_size_px.1.ceil() as i32,
             size.0,
             size.1,
-            8,
+            4,
         );
 
         Self {
