@@ -511,37 +511,17 @@ impl<'a> TextRenderer<'a> {
             for (term_g, shaped_g) in glyphs_iter {
                 // Extract all glyph data as owned/Copy values so the borrow on
                 // `self.glyphs` ends before we re-access other fields of `self`.
-                let Some((left, mut top, width, height, tex)) =
-                    self.ensure_glyph(shaped_g.glyph_id)
+                let Some((left, top, width, height, tex)) = self.ensure_glyph(shaped_g.glyph_id)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
                     continue;
                 };
 
-                // Clip glyphs that would render outside the cell
-                // if top - height < 0 {
-                //     top = height;
-                // }
-
                 let x_offset = hb_to_px(shaped_g.x_offset, px_size, units_per_em);
                 let y_offset = hb_to_px(shaped_g.y_offset, px_size, units_per_em);
 
                 let w = width as f32;
-                let mut h = height as f32;
-
-                // Adjust the glyph size and position if it exceeds the cell height,
-                // to avoid bleeding into vertical cells.
-                if h > (cell_box.height + 1) as f32 {
-                    let diff = h - cell_box.height as f32;
-                    h -= diff;
-
-                    let diff = diff.ceil() as i32;
-                    if top < 0 {
-                        top += diff;
-                    } else {
-                        top -= diff;
-                    }
-                }
+                let h = height as f32;
 
                 let x = pen_x + x_offset + left as f32;
                 let y = baseline_y - y_offset - top as f32 + self.font_size_px.2; // Adjust for descender
