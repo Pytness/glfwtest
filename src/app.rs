@@ -8,8 +8,10 @@ use glutin::{
 
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::ActiveEventLoop,
+    keyboard::KeyCode,
     window::{Window, WindowId},
 };
 
@@ -27,11 +29,10 @@ use crate::{gl_handler::GlHandler, macros::macs::include_font};
 
 use std::time::Instant;
 
-const FONT_SIZE: u32 = 40;
 // const TEXT: &str = "-<- <= b🤔";
 // const TEXT: &str = "-<-<=_";
-const TEXT: &str = " NORMAL  ";
-
+// const TEXT: &str = "  NO<=AL   -<-";
+const TEXT: &str = " NORMAL  17:09:09  ";
 pub struct App<'a> {
     gl_handler: GlHandler,
     state: Option<AppState>,
@@ -40,8 +41,8 @@ pub struct App<'a> {
     text_renderer: Option<TextRenderer<'a>>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
-    text_manager: Option<TextManager>,
     text_index: usize,
+    conf_font_size_px: u32,
 }
 
 struct AppState {
@@ -66,8 +67,8 @@ impl<'a> App<'a> {
             text_renderer: None,
             triangle_renderer: None,
             quad_renderer: None,
-            text_manager: None,
             text_index: 0,
+            conf_font_size_px: 16,
         }
     }
 
@@ -75,6 +76,116 @@ impl<'a> App<'a> {
     /// Calling this function before that will result in undefined behavior.
     pub unsafe fn gl(&self) -> &glow::Context {
         self.gl.as_ref().unwrap()
+    }
+
+    pub fn on_resize(&mut self, size: &PhysicalSize<u32>) {
+        let start = Instant::now();
+        // Some platforms like EGL require resizing GL surface to update the size
+        // Notable platforms here are Wayland and macOS, other don't require it
+        // and the function is no-op, but it's wise to resize it for portability
+        // reasons.
+        if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
+            let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
+            gl_surface.resize(
+                gl_context,
+                NonZeroU32::new(size.width).unwrap(),
+                NonZeroU32::new(size.height).unwrap(),
+            );
+        } else {
+            println!("Resize event received before GL surface was created, ignoring.");
+        }
+
+        println!("REDRAWING -----------------------------------V");
+        unsafe {
+            let font_size = self.text_renderer.as_ref().unwrap().font_size();
+
+            println!(
+                "!!!Cell size: {}x{}",
+                font_size.0 as i32, font_size.1 as i32
+            );
+
+            self.quad_renderer = Some(renderers::QuadRenderer::new(
+                self.gl.as_ref().unwrap().clone(),
+                size.width as i32,
+                size.height as i32,
+            ));
+
+            self.text_renderer
+                .as_mut()
+                .unwrap()
+                .set_viewport(size.width as i32, size.height as i32);
+
+            self.gl()
+                .viewport(0, 0, size.width as i32, size.height as i32);
+
+            let chars = &TEXT.chars().collect::<Vec<_>>();
+            println!("Rendering text: {:?}", chars);
+
+            let green = (87, 211, 109);
+            let white = (217, 217, 217);
+            let black = (0, 0, 0);
+
+            let color_by_range: Vec<((u8, u8, u8), (u8, u8, u8))> = {
+                // range, fg_color, bg_color
+                // " NORMAL  17:09:09  ";
+                let count = [
+                    (1, green, black),  // Red for ""
+                    (8, black, green),  // Red for " NORMAL "
+                    (1, white, green),  // Green for ""
+                    (12, black, white), // White for "  17:09:09  "
+                    (1, white, black),  // White for ""
+                ];
+
+                let count_len = count
+                    .iter()
+                    .map(|i| i.0)
+                    .reduce(|acc, c| acc + c)
+                    .unwrap_or(0);
+
+                let mut result = Vec::with_capacity(count_len);
+
+                for (len, fg_color, bg_color) in count {
+                    for _ in 0..len {
+                        result.push((fg_color, bg_color));
+                    }
+                }
+
+                result
+            };
+
+            let glyphs: Vec<TermGlyph> = chars
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| {
+                    let (fg_color, bg_color) =
+                        color_by_range.get(i).cloned().unwrap_or((white, black));
+                    TermGlyph {
+                        char: c,
+                        fg_color,
+                        bg_color,
+                    }
+                })
+                .collect();
+
+            self.quad_renderer.as_ref().unwrap().with(|| {
+                let proj = ortho(size.width as f32, size.height as f32);
+
+                let rows = self.text_renderer.as_ref().unwrap().text_manager.rows;
+
+                for row in 0..rows {
+                    if row % 2 == 0 && row != 0 {
+                        continue;
+                    }
+                    self.text_renderer
+                        .as_mut()
+                        .unwrap()
+                        .draw_glyphs(&glyphs, row, 0, &proj);
+                }
+            });
+        }
+
+        let duration = start.elapsed();
+        println!("Resized in {} ms", duration.as_millis());
     }
 }
 
@@ -133,7 +244,7 @@ impl<'a> ApplicationHandler for App<'a> {
             TextRenderer::<'a>::new(
                 self.gl.as_ref().unwrap().clone(),
                 font_registry,
-                FONT_SIZE,
+                self.conf_font_size_px,
                 (width, height),
             )
         });
@@ -147,15 +258,6 @@ impl<'a> ApplicationHandler for App<'a> {
         });
 
         let font_size = self.text_renderer.as_ref().unwrap().font_size();
-        self.text_manager.get_or_insert_with(|| {
-            TextManager::new(
-                font_size.0 as i32,
-                font_size.1 as i32,
-                window.inner_size().width as i32,
-                window.inner_size().height as i32,
-                8,
-            )
-        });
 
         self.state = Some(AppState { gl_surface, window });
     }
@@ -168,95 +270,7 @@ impl<'a> ApplicationHandler for App<'a> {
     ) {
         match event {
             WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
-                let start = Instant::now();
-                // Some platforms like EGL require resizing GL surface to update the size
-                // Notable platforms here are Wayland and macOS, other don't require it
-                // and the function is no-op, but it's wise to resize it for portability
-                // reasons.
-                if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
-                    let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
-                    gl_surface.resize(
-                        gl_context,
-                        NonZeroU32::new(size.width).unwrap(),
-                        NonZeroU32::new(size.height).unwrap(),
-                    );
-
-                    println!("REDRAWING -----------------------------------V");
-                    unsafe {
-                        let font_size = self.text_renderer.as_ref().unwrap().font_size();
-
-                        self.text_manager = Some(TextManager::new(
-                            font_size.0 as i32,
-                            font_size.1 as i32,
-                            size.width as i32,
-                            size.height as i32,
-                            8,
-                        ));
-
-                        println!(
-                            "!!!Cell size: {}x{}",
-                            font_size.0 as i32, font_size.1 as i32
-                        );
-
-                        self.quad_renderer = Some(renderers::QuadRenderer::new(
-                            self.gl.as_ref().unwrap().clone(),
-                            size.width as i32,
-                            size.height as i32,
-                        ));
-
-                        self.text_renderer
-                            .as_mut()
-                            .unwrap()
-                            .set_viewport(size.width as i32, size.height as i32);
-
-                        self.gl()
-                            .viewport(0, 0, size.width as i32, size.height as i32);
-
-                        let chars = &TEXT.chars().collect::<Vec<_>>();
-
-                        let glyphs: Vec<TermGlyph> = chars
-                            .iter()
-                            .enumerate()
-                            .map(|(_i, &c)| {
-                                if c.is_whitespace() || c.is_alphabetic() {
-                                    TermGlyph {
-                                        char: c,
-                                        bg_color: (255, 255, 255),
-                                        fg_color: (0, 0, 0),
-                                    }
-                                } else {
-                                    TermGlyph {
-                                        char: c,
-                                        fg_color: (255, 255, 255),
-                                        bg_color: (0, 0, 0),
-                                    }
-                                }
-                            })
-                            .collect();
-
-                        self.quad_renderer.as_ref().unwrap().with(|| {
-                            let proj = ortho(size.width as f32, size.height as f32);
-
-                            self.text_renderer
-                                .as_mut()
-                                .unwrap()
-                                .draw_glyphs(&glyphs, 0, 0, &proj);
-
-                            // self.text_renderer.as_mut().unwrap().draw_glyphs(
-                            //     &glyphs,
-                            //     1,
-                            //     0,
-                            //     &proj,
-                            //     size.height as i32,
-                            // );
-                        });
-                    }
-
-                    window.request_redraw();
-                }
-
-                let duration = start.elapsed();
-                println!("Resized in {} ms", duration.as_millis());
+                self.on_resize(&size);
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -298,44 +312,42 @@ impl<'a> ApplicationHandler for App<'a> {
                 let duration = start.elapsed();
                 println!("Redrawn in {} ms", duration.as_millis());
             }
-
-            WindowEvent::MouseInput {
-                device_id: _device_id,
-                state,
-                button,
+            WindowEvent::KeyboardInput {
+                device_id: _,
+                event,
+                is_synthetic: _,
             } => {
-                if state == winit::event::ElementState::Pressed
-                    && button == winit::event::MouseButton::Left
-                {
-                    let window = &self.state.as_ref().unwrap().window;
+                //conf_font_size_px
+                if event.repeat || event.state != winit::event::ElementState::Pressed {
+                    return;
+                }
 
-                    if self.text_index < TEXT.len() {
-                        let text_manager = self.text_manager.as_ref().unwrap();
-
-                        let cell_position =
-                            text_manager.get_cell_position(0, self.text_index as i32);
-
-                        let proj = ortho(
-                            window.inner_size().width as f32,
-                            window.inner_size().height as f32,
-                        );
-
-                        unsafe {
-                            self.quad_renderer.as_ref().unwrap().with(|| {
-                                self.text_renderer.as_mut().unwrap().draw_text(
-                                    &TEXT[self.text_index..self.text_index + 1],
-                                    cell_position.x as f32,
-                                    cell_position.y as f32,
-                                    [1.0, 1.0, 1.0],
-                                    &proj,
-                                );
-                            })
-                        }
-
-                        self.text_index += 1;
+                match event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(KeyCode::Equal) => {
+                        self.conf_font_size_px += 1;
+                        println!("Increasing font size to {}", self.conf_font_size_px);
                     }
+                    winit::keyboard::PhysicalKey::Code(KeyCode::Minus) => {
+                        if self.conf_font_size_px > 2 {
+                            self.conf_font_size_px -= 1;
+                            println!("Decreasing font size to {}", self.conf_font_size_px);
+                        }
+                    }
+                    _ => {}
+                }
 
-                    // window.request_redraw();
+                // for now, even it says px, it's actually font size in points, but we can change it later to be more intuitive
+
+                if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
+                    self.text_renderer
+                        .as_mut()
+                        .unwrap()
+                        .update_font_size(self.conf_font_size_px, 96);
+
+                    let size = window.inner_size();
+                    let physical_size = PhysicalSize::new(size.width, size.height);
+                    window.request_redraw();
+                    self.on_resize(&physical_size);
                 }
             }
             _ => (),
