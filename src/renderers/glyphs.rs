@@ -129,6 +129,21 @@ impl<'a> TextRenderer<'a> {
         let ft_face = FT_LIB
             .new_memory_face(font_data.to_vec(), 0)
             .expect("failed to load freetype face");
+
+        // BUG:
+        // freetype-sys uses an incorrect value for FT_LCD_FILTER_LIGHT (3 instead of 2)
+        // which causes the call to set_lcd_filter to fail with "Invalid argument".
+        //
+        // ```
+        // FT_LIB
+        //     .set_lcd_filter(freetype::LcdFilter::LcdFilterLight)
+        //     .expect("failed to set LCD filter");
+        // ```
+        let err = unsafe { freetype::ffi::FT_Library_SetLcdFilter(FT_LIB.raw(), 2) };
+        if err != freetype::ffi::FT_Err_Ok {
+            println!("Warning: failed to set LCD filter (error code {})", err);
+        }
+
         ft_face
             .set_char_size(0, (px_size * 64) as isize, 96, 96)
             .expect("failed to set pixel size");
