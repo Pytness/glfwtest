@@ -51,7 +51,7 @@ pub struct TextRenderer<'a> {
     ft_face: freetype::Face,
     rb_face: RbFace<'a>,
 
-    text_manager: TextManager,
+    pub text_manager: TextManager,
 
     glyphs: HashMap<u32, GlyphTexture>,
 
