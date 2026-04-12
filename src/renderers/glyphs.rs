@@ -3,6 +3,8 @@ use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
+use freetype::RenderMode;
+use freetype::bitmap::PixelMode;
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
 use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
@@ -43,6 +45,7 @@ struct GlyphTexture {
     height: i32,
     left: i32,
     top: i32,
+    is_color: bool,
 }
 
 pub struct TextRenderer<'a> {
@@ -62,6 +65,7 @@ pub struct TextRenderer<'a> {
     u_proj: Option<glow::NativeUniformLocation>,
     u_color: Option<glow::NativeUniformLocation>,
     u_background_color: Option<glow::NativeUniformLocation>,
+    u_is_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
     font_size_px: (f32, f32, f32), // (cell_width, cell_height, descender)
     px_size: f32,
@@ -170,6 +174,7 @@ impl<'a> TextRenderer<'a> {
         let u_proj = unsafe { gl.get_uniform_location(program, "u_proj") };
         let u_color = unsafe { gl.get_uniform_location(program, "u_text_color") };
         let u_background_color = unsafe { gl.get_uniform_location(program, "u_background_color") };
+        let u_is_color = unsafe { gl.get_uniform_location(program, "u_is_color") };
         let u_tex = unsafe { gl.get_uniform_location(program, "u_font") };
 
         let text_manager = TextManager::new(
@@ -191,6 +196,7 @@ impl<'a> TextRenderer<'a> {
             vbo,
             u_proj,
             u_background_color,
+            u_is_color,
             u_color,
             u_tex,
             font_size_px,
@@ -262,8 +268,9 @@ impl<'a> TextRenderer<'a> {
             let texture = unsafe { self.load_glyph_texture(self.gl.as_ref(), glyph)? };
             self.glyphs.insert(glyph.char, texture);
         }
-        Some((g.left, g.top, g.width, g.height, g.tex))
+
         let g = self.glyphs.get(&glyph.char)?;
+        Some((g.left, g.top, g.width, g.height, g.tex, g.is_color))
     }
 
     /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
@@ -285,11 +292,41 @@ impl<'a> TextRenderer<'a> {
             .expect("freetype load_glyph failed");
 
         let bitmap = slot.bitmap();
+        println!("{:?}", bitmap.pixel_mode());
 
-        let width = bitmap.width() / 3;
-        let height = bitmap.rows();
+        let pixel_mode = bitmap.pixel_mode().ok();
+
+        let is_color = pixel_mode == Some(PixelMode::Bgra);
+
+        let width = if let Some(mode) = pixel_mode {
+            match mode {
+                PixelMode::Gray | PixelMode::LcdV => bitmap.width(),
+                PixelMode::Lcd => bitmap.width() / 3,
+                // PixelMode::Bgra => bitmap.width() / 4,
+                _ => bitmap.width(),
+            }
+        } else {
+            bitmap.width()
+        };
+
+        let height = if let Some(mode) = pixel_mode {
+            match mode {
+                PixelMode::Gray | PixelMode::Lcd => bitmap.rows(),
+                PixelMode::LcdV => bitmap.rows() / 3,
+                // PixelMode::Bgra => bitmap.rows() / 3,
+                _ => bitmap.rows(),
+            }
+        } else {
+            bitmap.rows()
+        };
+
         let left = slot.bitmap_left();
         let top = slot.bitmap_top();
+
+        println!(
+            "Rasterised glyph '{}': bitmap size = {}x{}, left={}, top={}",
+            glyph.char, width, height, left, top
+        );
 
         // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
         // implicitly permit unsafe calls without an unsafe{} block.
@@ -298,18 +335,59 @@ impl<'a> TextRenderer<'a> {
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
             // Grayscale bitmap: one byte per pixel, no alignment padding needed.
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGB8 as i32,
-                width,
-                height,
-                0,
-                glow::RGB,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
-            );
+            if pixel_mode == Some(PixelMode::Lcd) {
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGB8 as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RGB,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+                );
+            } else if pixel_mode == Some(PixelMode::LcdV) {
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGB8 as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RGB,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+                );
+            } else if pixel_mode == Some(PixelMode::Bgra) {
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    width,
+                    height,
+                    0,
+                    glow::BGRA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+                );
+            } else {
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RED as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RED,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+                );
+            }
 
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -338,6 +416,7 @@ impl<'a> TextRenderer<'a> {
                 height,
                 left,
                 top,
+                is_color,
             })
         }
     }
@@ -374,6 +453,7 @@ impl<'a> TextRenderer<'a> {
 
         let text = glyphs.iter().map(|g| g.char).collect::<Vec<char>>();
         let shaped = self.shape_text(&text);
+
         let units_per_em = self.units_per_em();
         let px_size = self.px_size;
 
@@ -412,11 +492,24 @@ impl<'a> TextRenderer<'a> {
             for (term_g, shaped_g) in glyphs_iter {
                 // Extract all glyph data as owned/Copy values so the borrow on
                 // `self.glyphs` ends before we re-access other fields of `self`.
-                let Some((left, top, width, height, tex)) = self.ensure_glyph(shaped_g.glyph_id)
+                let Some((left, mut top, width, height, tex, is_color)) =
+                    self.ensure_glyph(&shaped_g)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
                     continue;
                 };
+
+                println!(
+                    "Drawing glyph '{}': left={}, top={}, width={}, height={}, is_color={}",
+                    shaped_g.char, left, top, width, height, is_color
+                );
+
+                let glyph_scale = height as f32 / self.font_size_px.1;
+
+                // Scale top
+                if is_color {
+                    top = (top as f32 / glyph_scale) as i32;
+                }
 
                 let x_offset = hb_to_px(shaped_g.x_offset, px_size, units_per_em);
                 let y_offset = hb_to_px(shaped_g.y_offset, px_size, units_per_em);
@@ -439,32 +532,42 @@ impl<'a> TextRenderer<'a> {
                 ];
 
                 if w > 0.0 && h > 0.0 {
-                    let vertices = [
-                        Vertex {
-                            pos: [x, y],
-                            uv: [0.0, 0.0],
-                        },
-                        Vertex {
-                            pos: [x + w, y],
-                            uv: [1.0, 0.0],
-                        },
-                        Vertex {
-                            pos: [x + w, y + h],
-                            uv: [1.0, 1.0],
-                        },
-                        Vertex {
-                            pos: [x, y],
-                            uv: [0.0, 0.0],
-                        },
-                        Vertex {
-                            pos: [x + w, y + h],
-                            uv: [1.0, 1.0],
-                        },
-                        Vertex {
-                            pos: [x, y + h],
-                            uv: [0.0, 1.0],
-                        },
+                    let vertex_positions = [
+                        (x, y),
+                        (x + w, y),
+                        (x + w, y + h),
+                        (x, y),
+                        (x + w, y + h),
+                        (x, y + h),
                     ];
+
+                    let mut vertex_uvs = [
+                        (0.0, 0.0),
+                        (1.0, 0.0),
+                        (1.0, 1.0),
+                        (0.0, 0.0),
+                        (1.0, 1.0),
+                        (0.0, 1.0),
+                    ];
+
+                    // Transform vertex_uvs to match terminal cell height and width
+                    if is_color {
+                        vertex_uvs = vertex_uvs.map(|(u, v)| {
+                            let u = u * glyph_scale;
+                            let v = v * glyph_scale;
+                            (u, v)
+                        });
+                    }
+
+                    let vertices: Vec<Vertex> = vertex_positions
+                        .iter()
+                        .zip(vertex_uvs.iter())
+                        .map(|((px, py), (u, v))| Vertex {
+                            pos: [*px, *py],
+                            uv: [*u, *v],
+                        })
+                        .collect();
+
                     let gl = self.gl.as_ref();
 
                     gl.uniform_3_f32(self.u_color.as_ref(), fg_color[0], fg_color[1], fg_color[2]);
@@ -481,6 +584,11 @@ impl<'a> TextRenderer<'a> {
                         glow::ARRAY_BUFFER,
                         bytemuck::cast_slice(&vertices),
                         glow::DYNAMIC_DRAW,
+                    );
+                    gl.program_uniform_1_u32(
+                        self.program,
+                        self.u_is_color.as_ref(),
+                        if is_color { 1 } else { 0 },
                     );
 
                     // FIX:
@@ -501,7 +609,21 @@ impl<'a> TextRenderer<'a> {
 
                 // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
                 // we ignore the actual x_advance and just move the pen by the cell width.
-                pen_x += self.font_size_px.0;
+
+                let advance = ((width as f32 / glyph_scale) / self.font_size_px.0)
+                    .floor()
+                    .min(1.0);
+                println!(
+                    "[!!!] Glyph '{}': glyph_size={}x{}, cell_size={}x{}, advance={}, glyph_scale={}",
+                    shaped_g.char,
+                    width,
+                    height,
+                    self.font_size_px.0,
+                    self.font_size_px.1,
+                    advance,
+                    glyph_scale
+                );
+                pen_x += self.font_size_px.0 * advance;
             }
 
             let gl = self.gl.as_ref();
