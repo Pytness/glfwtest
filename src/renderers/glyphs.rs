@@ -3,31 +3,18 @@ use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-use freetype::RenderMode;
+use freetype::GlyphSlot;
 use freetype::bitmap::PixelMode;
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
 use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
 
-use crate::font_registry::FontRegistry;
+use crate::font_registry::{FontRegistry, ShapedGlyph};
 use crate::macros::macs::include_shader;
 use crate::text_manager::{TermGlyph, TextManager};
 
 static FT_LIB: LazyLock<Library> =
     LazyLock::new(|| Library::init().expect("failed to initialize FreeType library"));
-
-pub struct ShapedGlyph {
-    pub glyph_id: u32,
-    pub char: char,
-    // x_advance/y_advance are provided for completeness (callers doing free-flow layout
-    // may use them); the terminal renderer ignores them in favour of a fixed cell width.
-    #[allow(dead_code)]
-    pub x_advance: f32,
-    #[allow(dead_code)]
-    pub y_advance: f32,
-    pub x_offset: f32,
-    pub y_offset: f32,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -39,6 +26,7 @@ struct Vertex {
 unsafe impl bytemuck::Pod for Vertex {}
 unsafe impl bytemuck::Zeroable for Vertex {}
 
+#[derive(Clone, Copy)]
 struct GlyphTexture {
     tex: glow::NativeTexture,
     width: i32,
@@ -123,7 +111,7 @@ impl<'a> TextRenderer<'a> {
             .first()
             .expect("no fonts registered")
             .bytes
-            .as_slice();
+            .as_ref();
 
         // SAFETY: we extend the lifetime to 'static here, but we guarantee that
         // rb_face (which borrows this data) is dropped before font_data in our Drop impl.
@@ -220,182 +208,90 @@ impl<'a> TextRenderer<'a> {
         }
     }
 
-    pub fn shape_text(&mut self, chars: &[char]) -> Vec<ShapedGlyph> {
-        let mut buffer = self
-            .shape_buffer
-            .take()
-            .expect("shape_buffer already in use");
-
-        let text: String = chars.iter().collect();
-
-        buffer.push_str(&text);
-
-        // TODO: use self.rb_face.glyph_index
-
-        let shaped = rustybuzz::shape_with_plan(&self.rb_face, &self.shape_plan, buffer);
-
-        let infos = shaped.glyph_infos();
-        let positions = shaped.glyph_positions();
-        let glyphs: Vec<ShapedGlyph> = infos
-            .iter()
-            .zip(positions.iter())
-            .zip(chars.iter())
-            .map(|((info, pos), c)| ShapedGlyph {
-                glyph_id: info.glyph_id,
-                char: *c,
-                // rustybuzz positions are in font units; converted to pixels in draw_text
-                x_advance: pos.x_advance as f32,
-                y_advance: pos.y_advance as f32,
-                x_offset: pos.x_offset as f32,
-                y_offset: pos.y_offset as f32,
-            })
-            .collect();
-
-        self.shape_buffer = Some(shaped.clear());
-
-        glyphs
-    }
-
     /// Ensures the glyph is loaded and cached.
     /// Returns a tuple of (left, top, width, height, tex) to avoid holding a
     /// reference into `self.glyphs` across subsequent `self` accesses.
-    fn ensure_glyph(
-        &mut self,
-        glyph: &ShapedGlyph,
-    ) -> Option<(i32, i32, i32, i32, glow::NativeTexture, bool)> {
+    fn ensure_glyph(&mut self, glyph: &ShapedGlyph) -> Option<&GlyphTexture> {
         if !self.glyphs.contains_key(&glyph.char) {
-            // SAFETY: requires an active GL context.
-            let texture = unsafe { self.load_glyph_texture(self.gl.as_ref(), glyph)? };
+            let texture = unsafe { self.load_glyph_texture(glyph)? };
             self.glyphs.insert(glyph.char, texture);
         }
 
-        let g = self.glyphs.get(&glyph.char)?;
-        Some((g.left, g.top, g.width, g.height, g.tex, g.is_color))
+        self.glyphs.get(&glyph.char)
     }
 
     /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
-    ///
-    /// The texture uses the `GL_RED` internal format (one byte per texel) to
-    /// minimise GPU memory usage.  The fragment shader samples only the red
-    /// channel.
-    unsafe fn load_glyph_texture(
-        &self,
-        gl: &glow::Context,
-        glyph: &ShapedGlyph,
-    ) -> Option<GlyphTexture> {
-        let slot = if glyph.glyph_id == 0 {
-            self.font_registry
-                .load_glyph_by_char(
-                    glyph.char,
-                    LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
-                )
-                .expect("freetype load_glyph failed")
-        } else {
-            self.font_registry
-                .load_glyph(
-                    glyph.glyph_id,
-                    LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
-                )
-                .expect("freetype load_glyph failed")
-        };
+    unsafe fn load_glyph_texture(&self, glyph: &ShapedGlyph) -> Option<GlyphTexture> {
+        let glyph_slot = self
+            .font_registry
+            .load_glyph(
+                glyph,
+                LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD | LoadFlag::COLOR,
+            )
+            .expect("freetype load_glyph failed");
 
-        let bitmap = slot.bitmap();
-        println!("{:?}", bitmap.pixel_mode());
+        let bitmap = glyph_slot.bitmap();
+        let pixel_mode = bitmap.pixel_mode().unwrap_or(PixelMode::None);
 
-        let pixel_mode = bitmap.pixel_mode().ok();
+        #[rustfmt::skip]
+        let (width, height) = {
+            let w = bitmap.width();
+            let h = bitmap.rows();
 
-        let is_color = pixel_mode == Some(PixelMode::Bgra);
-
-        let width = if let Some(mode) = pixel_mode {
-            match mode {
-                PixelMode::Gray | PixelMode::LcdV => bitmap.width(),
-                PixelMode::Lcd => bitmap.width() / 3,
-                // PixelMode::Bgra => bitmap.width() / 4,
-                _ => bitmap.width(),
+            match pixel_mode {
+                PixelMode::Gray => (h    , h    ), // Single-channel: one byte per pixel
+                PixelMode::Lcd  => (w / 3, h    ), // Three bytes per pixel (R, G, B) per horizontal pixel
+                PixelMode::LcdV => (w    , h / 3), // Three bytes per pixel (R, G, B) per vertical pixel
+                // Four bytes per pixel (B, G, R, A) per horizontal pixel
+                // but the width and height are not multiplied by 4
+                PixelMode::Bgra => (w, h),
+                _ => (w, h),
             }
-        } else {
-            bitmap.width()
         };
 
-        let height = if let Some(mode) = pixel_mode {
-            match mode {
-                PixelMode::Gray | PixelMode::Lcd => bitmap.rows(),
-                PixelMode::LcdV => bitmap.rows() / 3,
-                // PixelMode::Bgra => bitmap.rows() / 3,
-                _ => bitmap.rows(),
-            }
-        } else {
-            bitmap.rows()
+        let left = glyph_slot.bitmap_left();
+        let top = glyph_slot.bitmap_top();
+
+        let is_color = pixel_mode == PixelMode::Bgra;
+
+        let alignment = match pixel_mode {
+            PixelMode::Gray => 1,
+            PixelMode::Lcd | PixelMode::LcdV => 3,
+            PixelMode::Bgra => 4,
+            _ => 1,
         };
 
-        let left = slot.bitmap_left();
-        let top = slot.bitmap_top();
+        let internal_format = match pixel_mode {
+            PixelMode::Gray => glow::RED,
+            PixelMode::Lcd | PixelMode::LcdV => glow::RGB8,
+            PixelMode::Bgra => glow::RGBA8,
+            _ => glow::RED,
+        } as i32;
 
-        println!(
-            "Rasterised glyph '{}': bitmap size = {}x{}, left={}, top={}",
-            glyph.char, width, height, left, top
-        );
+        let format = match pixel_mode {
+            PixelMode::Gray => glow::RED,
+            PixelMode::Lcd | PixelMode::LcdV => glow::RGB,
+            PixelMode::Bgra => glow::BGRA,
+            _ => glow::RED,
+        };
 
-        // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
-        // implicitly permit unsafe calls without an unsafe{} block.
         unsafe {
-            let tex = gl.create_texture().ok()?;
+            let gl = self.gl.as_ref();
+            let tex = gl.create_texture().ok().expect("failed to create texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
 
-            // Grayscale bitmap: one byte per pixel, no alignment padding needed.
-            if pixel_mode == Some(PixelMode::Lcd) {
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGB8 as i32,
-                    width,
-                    height,
-                    0,
-                    glow::RGB,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
-                );
-            } else if pixel_mode == Some(PixelMode::LcdV) {
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 3);
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGB8 as i32,
-                    width,
-                    height,
-                    0,
-                    glow::RGB,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
-                );
-            } else if pixel_mode == Some(PixelMode::Bgra) {
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA8 as i32,
-                    width,
-                    height,
-                    0,
-                    glow::BGRA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
-                );
-            } else {
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RED as i32,
-                    width,
-                    height,
-                    0,
-                    glow::RED,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
-                );
-            }
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                internal_format,
+                width,
+                height,
+                0,
+                format,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
+            );
 
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -460,7 +356,7 @@ impl<'a> TextRenderer<'a> {
         let baseline_y: f32 = cell_box.y as f32;
 
         let text = glyphs.iter().map(|g| g.char).collect::<Vec<char>>();
-        let shaped = self.shape_text(&text);
+        let shaped = self.font_registry.shape_text(&text);
 
         let units_per_em = self.units_per_em();
         let px_size = self.px_size;
@@ -498,10 +394,14 @@ impl<'a> TextRenderer<'a> {
 
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             for (term_g, shaped_g) in glyphs_iter {
-                // Extract all glyph data as owned/Copy values so the borrow on
-                // `self.glyphs` ends before we re-access other fields of `self`.
-                let Some((left, mut top, width, height, tex, is_color)) =
-                    self.ensure_glyph(&shaped_g)
+                let Some(&GlyphTexture {
+                    left,
+                    mut top,
+                    width,
+                    height,
+                    tex,
+                    is_color,
+                }) = self.ensure_glyph(shaped_g)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
                     continue;
@@ -617,21 +517,10 @@ impl<'a> TextRenderer<'a> {
 
                 // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
                 // we ignore the actual x_advance and just move the pen by the cell width.
-
-                let advance = ((width as f32 / glyph_scale) / self.font_size_px.0)
+                let cell_advance = ((width as f32 / glyph_scale) / self.font_size_px.0)
                     .floor()
                     .min(1.0);
-                println!(
-                    "[!!!] Glyph '{}': glyph_size={}x{}, cell_size={}x{}, advance={}, glyph_scale={}",
-                    shaped_g.char,
-                    width,
-                    height,
-                    self.font_size_px.0,
-                    self.font_size_px.1,
-                    advance,
-                    glyph_scale
-                );
-                pen_x += self.font_size_px.0 * advance;
+                pen_x += self.font_size_px.0 * cell_advance;
             }
 
             let gl = self.gl.as_ref();

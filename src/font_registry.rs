@@ -1,42 +1,57 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use freetype::face::LoadFlag;
 use freetype::{Face, GlyphSlot, Library};
+use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
 
 const DEFAULT_DPI: u32 = 96;
 
 static FT_LIB: LazyLock<Library> =
     LazyLock::new(|| Library::init().expect("failed to initialize FreeType library"));
+
+pub struct ShapedGlyph {
+    pub glyph_id: u32,
+    pub char: char,
+    pub x_offset: f32,
+    pub y_offset: f32,
+}
+
 pub struct FontEntry {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Rc<&'static [u8]>,
     pub ft_face: Face,
+    pub rb_face: RbFace<'static>,
 }
 
 pub struct FontRegistry {
     fonts: Vec<FontEntry>,
+    shape_buffer: RefCell<Option<UnicodeBuffer>>,
 }
 
 impl FontRegistry {
     pub fn new() -> Self {
-        FontRegistry { fonts: Vec::new() }
+        FontRegistry {
+            fonts: Vec::new(),
+            shape_buffer: RefCell::new(Some(UnicodeBuffer::new())),
+        }
     }
 
-    pub fn register_font(&mut self, name: &str, bytes: &[u8]) {
-        let bytes = bytes.to_vec();
+    pub fn register_font(&mut self, name: &str, bytes: &'static [u8]) {
+        let bytes = Rc::new(bytes);
 
         let ft_face = FT_LIB
-            .new_memory_face(bytes.clone(), 0)
+            .new_memory_face(bytes.clone().to_vec(), 0)
             .expect("failed to load freetype face");
 
-        ft_face.has_color().then(|| {
-            println!("Font '{}' has color glyphs", name);
-        });
+        let rb_face = RbFace::from_slice(&bytes, 0).expect("failed to load rustybuzz face");
 
         self.fonts.push(FontEntry {
             name: name.to_string(),
-            bytes: bytes.into(),
+            bytes,
             ft_face,
+            rb_face,
         });
     }
 
@@ -45,9 +60,9 @@ impl FontRegistry {
     }
 
     /// Find and set best matching fixed size for the given pixel size.
-    fn set_color_size(&self, ft_face: &Face, pixel_size: isize, dpi: Option<u32>) {
+    fn set_color_size(&self, ft_face: &Face, pixel_size: isize) {
         let raw = ft_face.raw();
-        let num = unsafe { (*raw).num_fixed_sizes };
+        let num = (*raw).num_fixed_sizes;
 
         if num == 0 {
             println!(
@@ -104,7 +119,7 @@ impl FontRegistry {
                     .set_char_size(0, char_size, dpi, dpi)
                     .expect("failed to set char size");
             } else {
-                self.set_color_size(&font.ft_face, char_size, Some(dpi));
+                self.set_color_size(&font.ft_face, char_size);
                 println!(
                     "Skipping char size setting for font '{}' because it has color glyphs",
                     font.name
@@ -135,7 +150,7 @@ impl FontRegistry {
         None
     }
 
-    pub fn load_glyph(&self, glyph_id: u32, load_flags: LoadFlag) -> Option<&GlyphSlot> {
+    pub fn load_glyph_by_id(&self, glyph_id: u32, load_flags: LoadFlag) -> Option<&GlyphSlot> {
         let mut glyph: Option<&GlyphSlot> = None;
 
         for entry in self.fonts.iter() {
@@ -143,16 +158,7 @@ impl FontRegistry {
 
             if let Ok(_) = r {
                 let g = entry.ft_face.glyph();
-                let metrics = g.metrics();
-                println!(
-                    "Loaded glyph {} from font '{}', metrics: width={}, height={}, horiAdvance={}, vertAdvance={}",
-                    glyph_id,
-                    entry.name,
-                    metrics.width,
-                    metrics.height,
-                    metrics.horiAdvance,
-                    metrics.vertAdvance
-                );
+                println!("Loaded glyph {} from font '{}'", glyph_id, entry.name,);
                 glyph = Some(entry.ft_face.glyph());
                 break;
             }
@@ -161,23 +167,8 @@ impl FontRegistry {
         return glyph;
     }
 
-    pub fn load_glyph_by_char(
-        &self,
-        char_code: char,
-        mut load_flags: LoadFlag,
-    ) -> Option<&GlyphSlot> {
+    pub fn load_glyph_by_char(&self, char_code: char, load_flags: LoadFlag) -> Option<&GlyphSlot> {
         if let Some((glyph_id, face)) = self.get_char_index(char_code) {
-            println!(
-                "Loading glyph ID {} for char code '{}' from font '{}'",
-                glyph_id,
-                char_code,
-                face.family_name().unwrap_or("unknown".to_string())
-            );
-
-            if face.has_color() {
-                load_flags |= LoadFlag::COLOR;
-            }
-
             return face
                 .load_glyph(glyph_id, load_flags)
                 .ok()
@@ -185,6 +176,47 @@ impl FontRegistry {
         }
 
         None
+    }
+
+    pub fn load_glyph(&self, glyph: &ShapedGlyph, load_flags: LoadFlag) -> Option<&GlyphSlot> {
+        if glyph.glyph_id == 0 {
+            self.load_glyph_by_char(glyph.char, load_flags)
+        } else {
+            self.load_glyph_by_id(glyph.glyph_id, load_flags)
+        }
+    }
+
+    pub fn shape_text(&self, chars: &[char]) -> Vec<ShapedGlyph> {
+        let mut buffer = self
+            .shape_buffer
+            .borrow_mut()
+            .take()
+            .expect("shape buffer should always be available");
+
+        let text: String = chars.iter().collect();
+        buffer.push_str(&text);
+
+        let font = self.fonts.first().expect("no fonts registered");
+        let shaped = rustybuzz::shape(&font.rb_face, &[], buffer);
+
+        let infos = shaped.glyph_infos();
+        let positions = shaped.glyph_positions();
+        let glyphs: Vec<ShapedGlyph> = infos
+            .iter()
+            .zip(positions.iter())
+            .zip(chars.iter())
+            .map(|((info, pos), c)| ShapedGlyph {
+                glyph_id: info.glyph_id,
+                char: *c,
+                // rustybuzz positions are in font units; converted to pixels in draw_text
+                x_offset: pos.x_offset as f32,
+                y_offset: pos.y_offset as f32,
+            })
+            .collect();
+
+        self.shape_buffer.borrow_mut().replace(shaped.clear());
+
+        glyphs
     }
 
     pub fn size_metrics(&self) -> Option<freetype::ffi::FT_Size_Metrics> {
