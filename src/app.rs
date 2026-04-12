@@ -59,6 +59,13 @@ impl<'a> App<'a> {
             include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
         );
 
+        font_registry.register_font(
+            "SymbolsNerdFont-Regular.ttf",
+            include_font!("SymbolsNerdFont-Regular.ttf"),
+        );
+
+        font_registry.register_font("NotoColorEmoji.ttf", include_font!("NotoColorEmoji.ttf"));
+
         Self {
             gl_handler: GlHandler::new(template, display_builder),
             state: None,
