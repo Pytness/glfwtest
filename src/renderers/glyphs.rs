@@ -283,13 +283,21 @@ impl<'a> TextRenderer<'a> {
         gl: &glow::Context,
         glyph: &ShapedGlyph,
     ) -> Option<GlyphTexture> {
-        let slot = self
-            .font_registry
-            .load_glyph_by_char(
-                glyph.char,
-                LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
-            )
-            .expect("freetype load_glyph failed");
+        let slot = if glyph.glyph_id == 0 {
+            self.font_registry
+                .load_glyph_by_char(
+                    glyph.char,
+                    LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
+                )
+                .expect("freetype load_glyph failed")
+        } else {
+            self.font_registry
+                .load_glyph(
+                    glyph.glyph_id,
+                    LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
+                )
+                .expect("freetype load_glyph failed")
+        };
 
         let bitmap = slot.bitmap();
         println!("{:?}", bitmap.pixel_mode());
