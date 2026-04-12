@@ -16,6 +16,7 @@ static FT_LIB: LazyLock<Library> =
 
 pub struct ShapedGlyph {
     pub glyph_id: u32,
+    pub char: char,
     // x_advance/y_advance are provided for completeness (callers doing free-flow layout
     // may use them); the terminal renderer ignores them in favour of a fixed cell width.
     #[allow(dead_code)]
@@ -48,12 +49,11 @@ pub struct TextRenderer<'a> {
     gl: Rc<glow::Context>,
     // font_data must outlive rb_face; both are dropped explicitly in Drop (rb_face first)
     font_registry: &'a FontRegistry,
-    ft_face: freetype::Face,
     rb_face: RbFace<'a>,
 
     pub text_manager: TextManager,
 
-    glyphs: HashMap<u32, GlyphTexture>,
+    glyphs: HashMap<char, GlyphTexture>,
 
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
@@ -81,12 +81,11 @@ impl<'a> TextRenderer<'a> {
     }
 
     pub fn update_font_size(&mut self, px_size: u32, dpi: u32) {
-        self.ft_face
-            .set_char_size(0, (px_size * 64) as isize, dpi, dpi)
-            .expect("failed to set pixel size");
+        self.font_registry
+            .set_char_size(px_size as isize, Some(dpi));
 
         let metrics = self
-            .ft_face
+            .font_registry
             .size_metrics()
             .expect("failed to get size metrics");
 
@@ -126,9 +125,7 @@ impl<'a> TextRenderer<'a> {
         // rb_face (which borrows this data) is dropped before font_data in our Drop impl.
         let rb_face = RbFace::from_slice(font_data, 0).expect("failed to create rustybuzz face");
 
-        let ft_face = FT_LIB
-            .new_memory_face(font_data.to_vec(), 0)
-            .expect("failed to load freetype face");
+        // let ttf_face = TtfFace::parse(font_data, 0).expect("failed to create ttf_parser face");
 
         // BUG:
         // freetype-sys uses an incorrect value for FT_LCD_FILTER_LIGHT (3 instead of 2)
@@ -144,9 +141,7 @@ impl<'a> TextRenderer<'a> {
             println!("Warning: failed to set LCD filter (error code {})", err);
         }
 
-        ft_face
-            .set_char_size(0, (px_size * 64) as isize, 96, 96)
-            .expect("failed to set pixel size");
+        font_registry.set_char_size(px_size as isize, None);
 
         let shape_plan = ShapePlan::new(
             &rb_face,
@@ -156,7 +151,10 @@ impl<'a> TextRenderer<'a> {
             &[],
         );
 
-        let metrics = ft_face.size_metrics().expect("failed to get size metrics");
+        let metrics = font_registry
+            .size_metrics()
+            .expect("failed to get size metrics");
+
         let cell_width = metrics.max_advance as f32 / 64.0;
         let cell_height = metrics.height as f32 / 64.0;
         let descender = metrics.descender as f32 / 64.0;
@@ -185,7 +183,6 @@ impl<'a> TextRenderer<'a> {
         Self {
             gl,
             font_registry,
-            ft_face,
             rb_face,
             text_manager,
             glyphs: HashMap::new(),
@@ -217,23 +214,29 @@ impl<'a> TextRenderer<'a> {
         }
     }
 
-    pub fn shape_text(&mut self, text: &str) -> Vec<ShapedGlyph> {
+    pub fn shape_text(&mut self, chars: &[char]) -> Vec<ShapedGlyph> {
         let mut buffer = self
             .shape_buffer
             .take()
             .expect("shape_buffer already in use");
 
-        buffer.push_str(text);
+        let text: String = chars.iter().collect();
+
+        buffer.push_str(&text);
+
+        // TODO: use self.rb_face.glyph_index
 
         let shaped = rustybuzz::shape_with_plan(&self.rb_face, &self.shape_plan, buffer);
 
         let infos = shaped.glyph_infos();
         let positions = shaped.glyph_positions();
-        let glyphs = infos
+        let glyphs: Vec<ShapedGlyph> = infos
             .iter()
             .zip(positions.iter())
-            .map(|(info, pos)| ShapedGlyph {
+            .zip(chars.iter())
+            .map(|((info, pos), c)| ShapedGlyph {
                 glyph_id: info.glyph_id,
+                char: *c,
                 // rustybuzz positions are in font units; converted to pixels in draw_text
                 x_advance: pos.x_advance as f32,
                 y_advance: pos.y_advance as f32,
@@ -250,15 +253,17 @@ impl<'a> TextRenderer<'a> {
     /// Ensures the glyph is loaded and cached.
     /// Returns a tuple of (left, top, width, height, tex) to avoid holding a
     /// reference into `self.glyphs` across subsequent `self` accesses.
-    fn ensure_glyph(&mut self, glyph_id: u32) -> Option<(i32, i32, i32, i32, glow::NativeTexture)> {
-        if !self.glyphs.contains_key(&glyph_id) {
+    fn ensure_glyph(
+        &mut self,
+        glyph: &ShapedGlyph,
+    ) -> Option<(i32, i32, i32, i32, glow::NativeTexture, bool)> {
+        if !self.glyphs.contains_key(&glyph.char) {
             // SAFETY: requires an active GL context.
-            let texture =
-                unsafe { Self::load_glyph_texture(self.gl.as_ref(), &self.ft_face, glyph_id)? };
-            self.glyphs.insert(glyph_id, texture);
+            let texture = unsafe { self.load_glyph_texture(self.gl.as_ref(), glyph)? };
+            self.glyphs.insert(glyph.char, texture);
         }
-        let g = self.glyphs.get(&glyph_id)?;
         Some((g.left, g.top, g.width, g.height, g.tex))
+        let g = self.glyphs.get(&glyph.char)?;
     }
 
     /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
@@ -267,21 +272,18 @@ impl<'a> TextRenderer<'a> {
     /// minimise GPU memory usage.  The fragment shader samples only the red
     /// channel.
     unsafe fn load_glyph_texture(
+        &self,
         gl: &glow::Context,
-        ft_face: &freetype::Face,
-        glyph_id: u32,
+        glyph: &ShapedGlyph,
     ) -> Option<GlyphTexture> {
-        ft_face
-            .load_glyph(
-                glyph_id,
-                LoadFlag::RENDER
-                    | LoadFlag::TARGET_NORMAL
-                    | LoadFlag::FORCE_AUTOHINT
-                    | LoadFlag::TARGET_LCD,
+        let slot = self
+            .font_registry
+            .load_glyph_by_char(
+                glyph.char,
+                LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD,
             )
             .expect("freetype load_glyph failed");
 
-        let slot = ft_face.glyph();
         let bitmap = slot.bitmap();
 
         let width = bitmap.width() / 3;
@@ -370,7 +372,7 @@ impl<'a> TextRenderer<'a> {
         let mut pen_x: f32 = cell_box.x as f32;
         let baseline_y: f32 = cell_box.y as f32;
 
-        let text = glyphs.iter().map(|g| g.char).collect::<String>();
+        let text = glyphs.iter().map(|g| g.char).collect::<Vec<char>>();
         let shaped = self.shape_text(&text);
         let units_per_em = self.units_per_em();
         let px_size = self.px_size;
