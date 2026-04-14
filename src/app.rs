@@ -193,17 +193,10 @@ impl<'a> App<'a> {
             self.quad_renderer.as_ref().unwrap().with(|| {
                 let proj = ortho(size.width as f32, size.height as f32);
 
-                let rows = self.text_renderer.as_ref().unwrap().text_manager.rows;
-
-                for row in 0..rows {
-                    if row % 2 == 0 && row != 0 {
-                        continue;
-                    }
-                    self.text_renderer
-                        .as_mut()
-                        .unwrap()
-                        .draw_glyphs(&glyphs, row, 0, &proj);
-                }
+                self.text_renderer
+                    .as_mut()
+                    .unwrap()
+                    .draw_glyphs(&glyphs, 0, 0, &proj);
             });
         }
 
