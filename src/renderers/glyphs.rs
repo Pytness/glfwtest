@@ -229,7 +229,10 @@ impl<'a> TextRenderer<'a> {
         ft_face
             .load_glyph(
                 glyph.glyph_id,
-                LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD | LoadFlag::COLOR,
+                LoadFlag::RENDER
+                    | LoadFlag::FORCE_AUTOHINT
+                    | LoadFlag::TARGET_NORMAL
+                    | LoadFlag::COLOR,
             )
             .expect("freetype load_glyph failed");
 

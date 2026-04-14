@@ -15,8 +15,7 @@ void main() {
         vec3 color = mix(u_background_color, tex.rgb, alpha);
         frag_color = vec4(color, alpha);
     } else {
-        float alpha = max(max(tex.r, tex.g), tex.b);
-        vec3 color = mix(u_background_color, u_text_color, alpha);
-       frag_color = vec4(color, alpha);
+        float alpha = tex.r;
+       frag_color = vec4(u_text_color, alpha);
     }
 }
