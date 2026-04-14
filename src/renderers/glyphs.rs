@@ -3,7 +3,6 @@ use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-use freetype::GlyphSlot;
 use freetype::bitmap::PixelMode;
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
@@ -57,7 +56,7 @@ pub struct TextRenderer<'a> {
     u_background_color: Option<glow::NativeUniformLocation>,
     u_is_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
-    font_size_px: (f32, f32, f32), // (cell_width, cell_height, descender)
+    font_size_px: (f32, f32, f32, f32), // (cell_width, cell_height, ascender, descender)
     px_size: f32,
     shape_plan: ShapePlan,
     shape_buffer: Option<UnicodeBuffer>,
@@ -70,7 +69,7 @@ impl<'a> TextRenderer<'a> {
 
     /// Returns (width, height) of the font at the current pixel size.
     /// This is not the same as the maximum glyph size, but can be used for layout purposes.
-    pub fn font_size(&self) -> (f32, f32, f32) {
+    pub fn font_size(&self) -> (f32, f32, f32, f32) {
         self.font_size_px
     }
 
@@ -84,10 +83,11 @@ impl<'a> TextRenderer<'a> {
             .expect("failed to get size metrics");
 
         let cell_width = metrics.max_advance as f32 / 64.0;
-        let cell_height = metrics.height as f32 / 64.0;
+        let ascender = metrics.ascender as f32 / 64.0;
         let descender = metrics.descender as f32 / 64.0;
+        let cell_height = ascender - descender;
 
-        self.font_size_px = (cell_width, cell_height, descender);
+        self.font_size_px = (cell_width, cell_height, ascender, descender);
         self.px_size = px_size as f32;
 
         self.text_manager = TextManager::new(
@@ -150,9 +150,10 @@ impl<'a> TextRenderer<'a> {
             .expect("failed to get size metrics");
 
         let cell_width = metrics.max_advance as f32 / 64.0;
-        let cell_height = metrics.height as f32 / 64.0;
+        let ascender = metrics.ascender as f32 / 64.0;
         let descender = metrics.descender as f32 / 64.0;
-        let font_size_px = (cell_width, cell_height, descender);
+        let cell_height = ascender - descender;
+        let font_size_px = (cell_width, cell_height, ascender, descender);
 
         // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
         // implicitly permit unsafe calls without an unsafe{} block.
@@ -468,7 +469,7 @@ impl<'a> TextRenderer<'a> {
                 let h = height as f32;
 
                 let x = pen_x + x_offset + left as f32;
-                let y = baseline_y - y_offset - top as f32 + self.font_size_px.2; // Adjust for descender
+                let y = baseline_y - y_offset - top as f32 + self.font_size_px.3; // Adjust for descender
 
                 let fg_color = [
                     term_g.fg_color.0 as f32 / 255.0,
