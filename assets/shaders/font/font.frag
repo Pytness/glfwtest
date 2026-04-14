@@ -8,7 +8,6 @@ uniform vec3 u_text_color;
 uniform bool u_is_color;
 
 void main() {
-    // The glyph texture is GL_RED (single channel); sample only the red component.
     if (u_is_color) {
         vec4 coverage = texture(u_font, v_uv).rgba;
         float alpha = max(max(coverage.r, coverage.g), coverage.b);
