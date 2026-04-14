@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use freetype::bitmap::PixelMode;
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
-use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
+use rustybuzz::Face as RbFace;
 
 use crate::font_registry::{FontRegistry, ShapedGlyph};
 use crate::macros::macs::include_shader;
@@ -66,8 +66,6 @@ pub struct TextRenderer<'a> {
     u_tex: Option<glow::NativeUniformLocation>,
     font_size_px: FontSize,
     px_size: f32,
-    shape_plan: ShapePlan,
-    shape_buffer: Option<UnicodeBuffer>,
 }
 
 impl<'a> TextRenderer<'a> {
@@ -151,14 +149,6 @@ impl<'a> TextRenderer<'a> {
 
         font_registry.set_char_size(px_size as isize, None);
 
-        let shape_plan = ShapePlan::new(
-            &rb_face,
-            rustybuzz::Direction::LeftToRight,
-            Some(rustybuzz::script::LATIN),
-            None,
-            &[],
-        );
-
         let metrics = font_registry
             .size_metrics()
             .expect("failed to get size metrics");
@@ -211,8 +201,6 @@ impl<'a> TextRenderer<'a> {
             u_tex,
             font_size_px,
             px_size: px_size as f32,
-            shape_plan,
-            shape_buffer: Some(UnicodeBuffer::new()),
         }
     }
 

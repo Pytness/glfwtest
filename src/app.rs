@@ -22,7 +22,7 @@ use glutin_winit::{DisplayBuilder, GlWindow};
 use crate::{
     font_registry::FontRegistry,
     renderers::{self, TextRenderer},
-    text_manager::{TermGlyph, TextManager},
+    text_manager::TermGlyph,
 };
 
 use crate::{gl_handler::GlHandler, macros::macs::include_font};
@@ -41,7 +41,6 @@ pub struct App<'a> {
     text_renderer: Option<TextRenderer<'a>>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
-    text_index: usize,
     conf_font_size_px: u32,
 }
 
@@ -74,7 +73,6 @@ impl<'a> App<'a> {
             text_renderer: None,
             triangle_renderer: None,
             quad_renderer: None,
-            text_index: 0,
             conf_font_size_px: 16,
         }
     }
@@ -91,7 +89,11 @@ impl<'a> App<'a> {
         // Notable platforms here are Wayland and macOS, other don't require it
         // and the function is no-op, but it's wise to resize it for portability
         // reasons.
-        if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
+        if let Some(AppState {
+            gl_surface,
+            window: _window,
+        }) = self.state.as_ref()
+        {
             let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
             gl_surface.resize(
                 gl_context,
@@ -264,8 +266,6 @@ impl<'a> ApplicationHandler for App<'a> {
             )
         });
 
-        let font_size = self.text_renderer.as_ref().unwrap().font_size();
-
         self.state = Some(AppState { gl_surface, window });
     }
 
@@ -345,7 +345,11 @@ impl<'a> ApplicationHandler for App<'a> {
 
                 // for now, even it says px, it's actually font size in points, but we can change it later to be more intuitive
 
-                if let Some(AppState { gl_surface, window }) = self.state.as_ref() {
+                if let Some(AppState {
+                    gl_surface: _gl_surface,
+                    window,
+                }) = self.state.as_ref()
+                {
                     self.text_renderer
                         .as_mut()
                         .unwrap()
