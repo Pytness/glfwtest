@@ -44,7 +44,7 @@ pub struct TextRenderer<'a> {
 
     pub text_manager: TextManager,
 
-    glyphs: HashMap<char, GlyphTexture>,
+    glyphs: HashMap<(usize, u32), GlyphTexture>,
 
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
@@ -212,24 +212,26 @@ impl<'a> TextRenderer<'a> {
     /// Returns a tuple of (left, top, width, height, tex) to avoid holding a
     /// reference into `self.glyphs` across subsequent `self` accesses.
     fn ensure_glyph(&mut self, glyph: &ShapedGlyph) -> Option<&GlyphTexture> {
-        if !self.glyphs.contains_key(&glyph.char) {
+        let key = (glyph.font_index, glyph.glyph_id);
+        if !self.glyphs.contains_key(&key) {
             let texture = unsafe { self.load_glyph_texture(glyph)? };
-            self.glyphs.insert(glyph.char, texture);
+            self.glyphs.insert(key, texture);
         }
 
-        self.glyphs.get(&glyph.char)
+        self.glyphs.get(&key)
     }
 
     /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
     unsafe fn load_glyph_texture(&self, glyph: &ShapedGlyph) -> Option<GlyphTexture> {
-        let glyph_slot = self
-            .font_registry
+        let ft_face = &self.font_registry.get_fonts()[glyph.font_index].ft_face;
+        ft_face
             .load_glyph(
-                glyph,
+                glyph.glyph_id,
                 LoadFlag::RENDER | LoadFlag::DEFAULT | LoadFlag::TARGET_LCD | LoadFlag::COLOR,
             )
             .expect("freetype load_glyph failed");
 
+        let glyph_slot = ft_face.glyph();
         let bitmap = glyph_slot.bitmap();
         let pixel_mode = bitmap.pixel_mode().unwrap_or(PixelMode::None);
 

@@ -14,6 +14,7 @@ static FT_LIB: LazyLock<Library> =
 pub struct ShapedGlyph {
     pub glyph_id: u32,
     pub char: char,
+    pub font_index: usize,
     pub x_offset: f32,
     pub y_offset: f32,
 }
@@ -128,8 +129,8 @@ impl FontRegistry {
         }
     }
 
-    pub fn get_char_index(&self, char_code: char) -> Option<(u32, &Face)> {
-        for entry in self.fonts.iter() {
+    pub fn get_char_index(&self, char_code: char) -> Option<(usize, u32)> {
+        for (font_index, entry) in self.fonts.iter().enumerate() {
             let glyph_id = entry.ft_face.get_char_index(char_code as usize);
             println!(
                 "Font '{}': char code '{}' (U+{:04X}) maps to glyph ID {:?}",
@@ -142,7 +143,7 @@ impl FontRegistry {
                         "Found glyph ID {} for char code '{}' in font '{}'",
                         glyph_id, char_code, entry.name
                     );
-                    return Some((glyph_id, &entry.ft_face));
+                    return Some((font_index, glyph_id));
                 }
             }
         }
@@ -168,7 +169,8 @@ impl FontRegistry {
     }
 
     pub fn load_glyph_by_char(&self, char_code: char, load_flags: LoadFlag) -> Option<&GlyphSlot> {
-        if let Some((glyph_id, face)) = self.get_char_index(char_code) {
+        if let Some((font_index, glyph_id)) = self.get_char_index(char_code) {
+            let face = &self.fonts[font_index].ft_face;
             return face
                 .load_glyph(glyph_id, load_flags)
                 .ok()
@@ -205,12 +207,21 @@ impl FontRegistry {
             .iter()
             .zip(positions.iter())
             .zip(chars.iter())
-            .map(|((info, pos), c)| ShapedGlyph {
-                glyph_id: info.glyph_id,
-                char: *c,
-                // rustybuzz positions are in font units; converted to pixels in draw_text
-                x_offset: pos.x_offset as f32,
-                y_offset: pos.y_offset as f32,
+            .map(|((info, pos), c)| {
+                let (font_index, id) = if info.glyph_id != 0 {
+                    (0, info.glyph_id)
+                } else {
+                    self.get_char_index(*c).unwrap_or((0, 0))
+                };
+
+                ShapedGlyph {
+                    glyph_id: id,
+                    char: *c,
+                    font_index,
+                    // rustybuzz positions are in font units; converted to pixels in draw_text
+                    x_offset: pos.x_offset as f32,
+                    y_offset: pos.y_offset as f32,
+                }
             })
             .collect();
 
