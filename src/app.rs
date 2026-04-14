@@ -108,7 +108,7 @@ impl<'a> App<'a> {
 
             println!(
                 "!!!Cell size: {}x{}",
-                font_size.0 as i32, font_size.1 as i32
+                font_size.width as i32, font_size.height as i32
             );
 
             self.quad_renderer = Some(renderers::QuadRenderer::new(

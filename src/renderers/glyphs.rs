@@ -26,6 +26,14 @@ unsafe impl bytemuck::Pod for Vertex {}
 unsafe impl bytemuck::Zeroable for Vertex {}
 
 #[derive(Clone, Copy)]
+pub struct FontSize {
+    pub width: f32,
+    pub height: f32,
+    pub ascender: f32,
+    pub descender: f32,
+}
+
+#[derive(Clone, Copy)]
 struct GlyphTexture {
     tex: glow::NativeTexture,
     width: i32,
@@ -56,7 +64,7 @@ pub struct TextRenderer<'a> {
     u_background_color: Option<glow::NativeUniformLocation>,
     u_is_color: Option<glow::NativeUniformLocation>,
     u_tex: Option<glow::NativeUniformLocation>,
-    font_size_px: (f32, f32, f32, f32), // (cell_width, cell_height, ascender, descender)
+    font_size_px: FontSize,
     px_size: f32,
     shape_plan: ShapePlan,
     shape_buffer: Option<UnicodeBuffer>,
@@ -69,7 +77,7 @@ impl<'a> TextRenderer<'a> {
 
     /// Returns (width, height) of the font at the current pixel size.
     /// This is not the same as the maximum glyph size, but can be used for layout purposes.
-    pub fn font_size(&self) -> (f32, f32, f32, f32) {
+    pub fn font_size(&self) -> FontSize {
         self.font_size_px
     }
 
@@ -87,7 +95,13 @@ impl<'a> TextRenderer<'a> {
         let descender = metrics.descender as f32 / 64.0;
         let cell_height = ascender - descender;
 
-        self.font_size_px = (cell_width, cell_height, ascender, descender);
+        self.font_size_px = FontSize {
+            width: cell_width,
+            height: cell_height,
+            ascender,
+            descender,
+        };
+
         self.px_size = px_size as f32;
 
         self.text_manager = TextManager::new(
@@ -153,7 +167,12 @@ impl<'a> TextRenderer<'a> {
         let ascender = metrics.ascender as f32 / 64.0;
         let descender = metrics.descender as f32 / 64.0;
         let cell_height = ascender - descender;
-        let font_size_px = (cell_width, cell_height, ascender, descender);
+        let font_size_px = FontSize {
+            width: cell_width,
+            height: cell_height,
+            ascender,
+            descender,
+        };
 
         // Explicit unsafe block required by Rust 2024: unsafe fn bodies no longer
         // implicitly permit unsafe calls without an unsafe{} block.
@@ -169,8 +188,8 @@ impl<'a> TextRenderer<'a> {
         let u_tex = unsafe { gl.get_uniform_location(program, "u_font") };
 
         let text_manager = TextManager::new(
-            font_size_px.0.ceil() as i32,
-            font_size_px.1.ceil() as i32,
+            font_size_px.width.ceil() as i32,
+            font_size_px.height.ceil() as i32,
             size.0,
             size.1,
             4,
@@ -288,7 +307,7 @@ impl<'a> TextRenderer<'a> {
         } else {
             unicode_width::UnicodeWidthChar::width(glyph.char).unwrap_or(1)
         };
-        let scale = (width as f32 / (cell_width as f32 * self.font_size_px.0)).max(1.0);
+        let scale = (width as f32 / (cell_width as f32 * self.font_size_px.width)).max(1.0);
 
         unsafe {
             let gl = self.gl.as_ref();
@@ -469,7 +488,7 @@ impl<'a> TextRenderer<'a> {
                 let h = height as f32;
 
                 let x = pen_x + x_offset + left as f32;
-                let y = baseline_y - y_offset - top as f32 + self.font_size_px.3; // Adjust for descender
+                let y = baseline_y - y_offset - top as f32 + self.font_size_px.descender; // Adjust for descender
 
                 let fg_color = [
                     term_g.fg_color.0 as f32 / 255.0,
@@ -560,7 +579,7 @@ impl<'a> TextRenderer<'a> {
 
                 // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
                 // we ignore the actual x_advance and just move the pen by the cell width.
-                pen_x += self.font_size_px.0 * cell_width as f32;
+                pen_x += self.font_size_px.width * cell_width as f32;
             }
 
             let gl = self.gl.as_ref();
