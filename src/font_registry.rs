@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use freetype::face::LoadFlag;
 use freetype::{Face, GlyphSlot, Library};
-use rustybuzz::{Face as RbFace, ShapePlan, UnicodeBuffer};
+use rustybuzz::{Face as RbFace, UnicodeBuffer};
 
 const DEFAULT_DPI: u32 = 96;
 
