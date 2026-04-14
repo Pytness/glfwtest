@@ -125,6 +125,14 @@ impl<'a> App<'a> {
                 self.gl.as_ref().unwrap().clone(),
             ));
 
+            self.quad_renderer.as_ref().unwrap().clear_section(
+                0,
+                0,
+                size.width as i32,
+                size.height as i32,
+                (0.0, 0.0, 0.0, 1.0),
+            );
+
             self.text_renderer
                 .as_mut()
                 .unwrap()
@@ -318,14 +326,6 @@ impl<'a> ApplicationHandler for App<'a> {
 
                         let inner_size = window.inner_size();
                         let size = (inner_size.width as usize, inner_size.height as usize);
-
-                        self.quad_renderer.as_ref().unwrap().clear_section(
-                            0,
-                            0,
-                            size.0 as i32,
-                            size.1 as i32,
-                            (0.0, 0.0, 0.0, 1.0),
-                        );
 
                         self.quad_renderer.as_ref().unwrap().render();
 
