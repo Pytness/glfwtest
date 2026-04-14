@@ -34,6 +34,8 @@ struct GlyphTexture {
     left: i32,
     top: i32,
     is_color: bool,
+    scale: f32,
+    cell_width: usize,
 }
 
 pub struct TextRenderer<'a> {
@@ -277,6 +279,13 @@ impl<'a> TextRenderer<'a> {
             _ => glow::RED,
         };
 
+        let cell_width = if is_color {
+            2
+        } else {
+            unicode_width::UnicodeWidthChar::width(glyph.char).unwrap_or(1)
+        };
+        let scale = (width as f32 / (cell_width as f32 * self.font_size_px.0)).max(1.0);
+
         unsafe {
             let gl = self.gl.as_ref();
             let tex = gl.create_texture().ok().expect("failed to create texture");
@@ -323,25 +332,48 @@ impl<'a> TextRenderer<'a> {
                 left,
                 top,
                 is_color,
+                scale,
+                cell_width,
             })
         }
     }
 
-    pub unsafe fn draw_glyphs_bg(&self, glyphs: &[TermGlyph], row: i32, col: i32) {
-        for (i, g) in glyphs.iter().enumerate() {
-            let cell_box = self.text_manager.get_cell_box(row, col + i as i32);
+    pub unsafe fn draw_glyphs_bg(
+        &self,
+        term_glyphs: &[TermGlyph],
+        widths: &[usize],
+        row: i32,
+        col: i32,
+    ) {
+        let mut advance_x = 0;
+
+        println!(
+            "Drawing background for row {}, col {}: term_glyphs={}, widths={:?}",
+            row,
+            col,
+            term_glyphs.len(),
+            widths
+        );
+
+        for (term_g, cell_width) in term_glyphs.iter().zip(widths.iter()) {
+            let cell_width = *cell_width as i32;
+
+            let cell_box = self.text_manager.get_cell_box(row, col + advance_x);
             let bg_color = [
-                g.bg_color.0 as f32 / 255.0,
-                g.bg_color.1 as f32 / 255.0,
-                g.bg_color.2 as f32 / 255.0,
+                term_g.bg_color.0 as f32 / 255.0,
+                term_g.bg_color.1 as f32 / 255.0,
+                term_g.bg_color.2 as f32 / 255.0,
             ];
+
             self.clear_section(
                 cell_box.x,
                 cell_box.y,
-                cell_box.width,
+                cell_box.width * cell_width,
                 cell_box.height,
                 [bg_color[0], bg_color[1], bg_color[2], 1.0],
             );
+
+            advance_x += cell_width;
         }
     }
 
@@ -368,8 +400,13 @@ impl<'a> TextRenderer<'a> {
 
         let glyphs_iter = glyphs.iter().zip(shaped.iter());
 
+        let glyph_widths: Vec<usize> = shaped
+            .iter()
+            .map(|g| self.ensure_glyph(g).map(|t| t.cell_width).unwrap_or(1))
+            .collect();
+
         unsafe {
-            self.draw_glyphs_bg(glyphs, row, col);
+            self.draw_glyphs_bg(glyphs, &glyph_widths, row, col);
             let gl = self.gl.as_ref();
 
             gl.bind_vertex_array(Some(self.vao));
@@ -403,6 +440,8 @@ impl<'a> TextRenderer<'a> {
                     height,
                     tex,
                     is_color,
+                    scale,
+                    cell_width,
                 }) = self.ensure_glyph(shaped_g)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
@@ -410,15 +449,13 @@ impl<'a> TextRenderer<'a> {
                 };
 
                 println!(
-                    "Drawing glyph '{}': left={}, top={}, width={}, height={}, is_color={}",
-                    shaped_g.char, left, top, width, height, is_color
+                    "Drawing glyph ({})='{}': left={}, top={}, width={}, height={}, is_color={}",
+                    shaped_g.glyph_id, shaped_g.char, left, top, width, height, is_color
                 );
-
-                let glyph_scale = height as f32 / self.font_size_px.1;
 
                 // Scale top
                 if is_color {
-                    top = (top as f32 / glyph_scale) as i32;
+                    top = (top as f32 / scale) as i32;
                 }
 
                 let x_offset = hb_to_px(shaped_g.x_offset, px_size, units_per_em);
@@ -463,8 +500,8 @@ impl<'a> TextRenderer<'a> {
                     // Transform vertex_uvs to match terminal cell height and width
                     if is_color {
                         vertex_uvs = vertex_uvs.map(|(u, v)| {
-                            let u = u * glyph_scale;
-                            let v = v * glyph_scale;
+                            let u = u * scale;
+                            let v = v * scale;
                             (u, v)
                         });
                     }
@@ -519,10 +556,7 @@ impl<'a> TextRenderer<'a> {
 
                 // NOTE: due to the way text is rendered in a terminal (in a fixed grid),
                 // we ignore the actual x_advance and just move the pen by the cell width.
-                let cell_advance = ((width as f32 / glyph_scale) / self.font_size_px.0)
-                    .floor()
-                    .min(1.0);
-                pen_x += self.font_size_px.0 * cell_advance;
+                pen_x += self.font_size_px.0 * cell_width as f32;
             }
 
             let gl = self.gl.as_ref();
