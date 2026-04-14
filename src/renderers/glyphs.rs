@@ -544,9 +544,9 @@ impl<'a> TextRenderer<'a> {
                     // within neighbouring cells.
                     gl.enable(glow::SCISSOR_TEST);
                     gl.scissor(
-                        0,
+                        pen_x as i32,
                         self.text_manager.window_height - cell_box.y,
-                        self.text_manager.window_width,
+                        cell_box.width * cell_width as i32,
                         cell_box.height,
                     );
 

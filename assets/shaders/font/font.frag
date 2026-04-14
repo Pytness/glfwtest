@@ -8,18 +8,15 @@ uniform vec3 u_text_color;
 uniform bool u_is_color;
 
 void main() {
+    vec4 tex = texture(u_font, v_uv);
+
     if (u_is_color) {
-        vec4 coverage = texture(u_font, v_uv).rgba;
-        float alpha = max(max(coverage.r, coverage.g), coverage.b);
-
-        // Output the text color with the alpha from the glyph texture.
-        frag_color = coverage;
+        float alpha = tex.a;
+        vec3 color = mix(u_background_color, tex.rgb, alpha);
+        frag_color = vec4(color, alpha);
     } else {
-        vec3 coverage = texture(u_font, v_uv).rgb;
-        float alpha = max(max(coverage.r, coverage.g), coverage.b);
-
-        // Output the text color with the alpha from the glyph texture.
-        frag_color = vec4(u_text_color, alpha);
+        float alpha = max(max(tex.r, tex.g), tex.b);
+        vec3 color = mix(u_background_color, u_text_color, alpha);
+       frag_color = vec4(color, alpha);
     }
-
 }
