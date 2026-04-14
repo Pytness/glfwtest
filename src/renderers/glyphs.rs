@@ -243,7 +243,7 @@ impl<'a> TextRenderer<'a> {
             let h = bitmap.rows();
 
             match pixel_mode {
-                PixelMode::Gray => (h    , h    ), // Single-channel: one byte per pixel
+                PixelMode::Gray => (w    , h    ), // Single-channel: one byte per pixel
                 PixelMode::Lcd  => (w / 3, h    ), // Three bytes per pixel (R, G, B) per horizontal pixel
                 PixelMode::LcdV => (w    , h / 3), // Three bytes per pixel (R, G, B) per vertical pixel
                 // Four bytes per pixel (B, G, R, A) per horizontal pixel
@@ -266,7 +266,7 @@ impl<'a> TextRenderer<'a> {
         };
 
         let internal_format = match pixel_mode {
-            PixelMode::Gray => glow::RED,
+            PixelMode::Gray => glow::R8,
             PixelMode::Lcd | PixelMode::LcdV => glow::RGB8,
             PixelMode::Bgra => glow::RGBA8,
             _ => glow::RED,
