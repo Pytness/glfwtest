@@ -557,7 +557,7 @@ impl<'a> TextRenderer<'a> {
                     gl.scissor(
                         pen_x as i32,
                         self.text_manager.window_height - cell_box.y,
-                        cell_box.width * cell_width as i32,
+                        width + left,
                         cell_box.height,
                     );
 
