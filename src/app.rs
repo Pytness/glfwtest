@@ -41,6 +41,7 @@ pub struct App<'a> {
     text_renderer: Option<TextRenderer<'a>>,
     triangle_renderer: Option<renderers::TriangleRenderer>,
     quad_renderer: Option<renderers::QuadRenderer>,
+    grid_renderer: Option<renderers::GridRenderer>,
     conf_font_size_px: u32,
 }
 
@@ -73,6 +74,7 @@ impl<'a> App<'a> {
             text_renderer: None,
             triangle_renderer: None,
             quad_renderer: None,
+            grid_renderer: None,
             conf_font_size_px: 16,
         }
     }
@@ -117,6 +119,10 @@ impl<'a> App<'a> {
                 self.gl.as_ref().unwrap().clone(),
                 size.width as i32,
                 size.height as i32,
+            ));
+
+            self.grid_renderer = Some(renderers::GridRenderer::new(
+                self.gl.as_ref().unwrap().clone(),
             ));
 
             self.text_renderer
@@ -284,11 +290,7 @@ impl<'a> ApplicationHandler for App<'a> {
             }
             WindowEvent::RedrawRequested => {
                 let start = Instant::now();
-                if let Some(AppState {
-                    gl_surface,
-                    window: _,
-                }) = &self.state
-                {
+                if let Some(AppState { gl_surface, window }) = &self.state {
                     let gl_context = self.gl_handler.gl_context.as_ref().unwrap();
 
                     unsafe {
@@ -302,15 +304,35 @@ impl<'a> ApplicationHandler for App<'a> {
                         //         .unwrap()
                         //         .get_cell_box(point.0, point.1);
                         //
-                        //     self.quad_renderer.as_ref().unwrap().clear_section(
-                        //         cell_box.x,
-                        //         height - cell_box.y,
-                        //         cell_box.width,
-                        //         cell_box.height,
-                        //     );
-                        // }
+
+                        let text_manager = &self.text_renderer.as_ref().unwrap().text_manager;
+                        let cell_size = (
+                            text_manager.font_width as usize,
+                            text_manager.font_height as usize,
+                        );
+
+                        let offset = (
+                            text_manager.border_x_px as usize,
+                            text_manager.border_y_px as usize,
+                        );
+
+                        let inner_size = window.inner_size();
+                        let size = (inner_size.width as usize, inner_size.height as usize);
+
+                        self.quad_renderer.as_ref().unwrap().clear_section(
+                            0,
+                            0,
+                            size.0 as i32,
+                            size.1 as i32,
+                            (0.0, 0.0, 0.0, 1.0),
+                        );
 
                         self.quad_renderer.as_ref().unwrap().render();
+
+                        self.grid_renderer
+                            .as_ref()
+                            .unwrap()
+                            .render(cell_size, offset, size);
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();
