@@ -1,3 +1,4 @@
+mod ansi_parser;
 mod app;
 mod font_registry;
 mod gl_handler;

@@ -20,6 +20,7 @@ use glutin::{display::GetGlDisplay, prelude::*};
 use glutin_winit::{DisplayBuilder, GlWindow};
 
 use crate::{
+    ansi_parser::{self, AnsiParser},
     font_registry::FontRegistry,
     renderers::{self, TextRenderer},
     text_manager::TermGlyph,
@@ -141,51 +142,53 @@ impl<'a> App<'a> {
             self.gl()
                 .viewport(0, 0, size.width as i32, size.height as i32);
 
+            let input = b"hello \x1b[31mred\x1b[0m normal \x1b[48;2;0;0;255mBG\x1b[49m";
+            let mut p = AnsiParser::new();
+
+            for &b in input {
+                if let Some(ch) = p.push(b) {
+                    println!(
+                        "char={} fg={:?} bg={:?}",
+                        ch as char, p.style.fg, p.style.bg
+                    );
+                }
+            }
+
+            let chars = input
+                .iter()
+                .filter_map(|&b| p.push(b))
+                .map(|b| b as char)
+                .collect::<Vec<_>>();
+
             let chars = &TEXT.chars().collect::<Vec<_>>();
             println!("Rendering text: {:?}", chars);
 
-            let green = (87, 211, 109);
-            let white = (217, 217, 217);
-            let black = (0, 0, 0);
-
-            let color_by_range: Vec<((u8, u8, u8), (u8, u8, u8))> = {
-                // range, fg_color, bg_color
-                // " NORMAL  17:09:09  ";
-                let count = [
-                    (1, green, black),  // Red for ""
-                    (8, black, green),  // Red for " NORMAL "
-                    (1, white, green),  // Green for ""
-                    (12, black, white), // White for "  17:09:09  "
-                    (1, white, black),  // White for ""
-                ];
-
-                let count_len = count
-                    .iter()
-                    .map(|i| i.0)
-                    .reduce(|acc, c| acc + c)
-                    .unwrap_or(0);
-
-                let mut result = Vec::with_capacity(count_len);
-
-                for (len, fg_color, bg_color) in count {
-                    for _ in 0..len {
-                        result.push((fg_color, bg_color));
-                    }
-                }
-
-                result
-            };
-
-            let glyphs: Vec<TermGlyph> = chars
+            let glyphs: Vec<TermGlyph> = input
                 .iter()
                 .enumerate()
-                .map(|(i, &c)| {
-                    let (fg_color, bg_color) =
-                        color_by_range.get(i).cloned().unwrap_or((white, black));
-                    TermGlyph {
-                        char: c,
-                        fg_color,
-                        bg_color,
+                .filter_map(|(i, &c)| {
+                    if let Some(ch) = p.push(c) {
+                        println!(
+                            "char={} fg={:?} bg={:?}",
+                            ch as char, p.style.fg, p.style.bg
+                        );
+
+                        let fg_color = match p.style.fg {
+                            ansi_parser::Color::Default => (255, 255, 255),
+                            c => c.to_rgb(),
+                        };
+                        let bg_color = match p.style.bg {
+                            ansi_parser::Color::Default => (0, 0, 0),
+                            c => c.to_rgb(),
+                        };
+
+                        Some(TermGlyph {
+                            char: ch as char,
+                            fg_color,
+                            bg_color,
+                        })
+                    } else {
+                        None
                     }
                 })
                 .collect();
@@ -322,10 +325,10 @@ impl<'a> ApplicationHandler for App<'a> {
 
                         self.quad_renderer.as_ref().unwrap().render();
 
-                        self.grid_renderer
-                            .as_ref()
-                            .unwrap()
-                            .render(cell_size, offset, size);
+                        // self.grid_renderer
+                        //     .as_ref()
+                        //     .unwrap()
+                        //     .render(cell_size, offset, size);
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();
