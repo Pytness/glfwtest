@@ -8,14 +8,16 @@ bytemuck = "1.25.0"
 glow = "0.17.0"
 freetype-rs = "0.38.0"
 rustybuzz = "0.20.1"
-winit = { version = "0.30.13", features = ["wayland"], default-features = false }
+winit = { version = "0.30.13", features = ["wayland-dlopen"], default-features = false }
 glutin = { version = "0.32.3", features = ["wayland"], default-features = false }
 glutin-winit = {version = "0.5.0", features = ["wayland", "egl"], default-features = false }
 bitflags = "2.11.0"
 unicode-width = "0.2.2"
+fontconfig = { version = "0.10.0", features = ["dlopen"] }
+yeslogic-fontconfig-sys = { version = "6.0.0", features = ["dlopen"] }
 
 [profile.release]
-opt-level = 3
+opt-level = 'z'
 strip = true
 lto = true
 codegen-units = 1

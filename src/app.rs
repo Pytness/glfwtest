@@ -56,16 +56,16 @@ impl<'a> App<'a> {
         let mut font_registry = FontRegistry::new();
 
         font_registry.register_font(
-            "CaskaydiaCoveNerdFont-Regular.ttf",
+            "CaskaydiaCove Nerd Font:size=10:antialias=true:autohint=true",
             include_font!("CaskaydiaCoveNerdFont-Regular.ttf"),
         );
 
         font_registry.register_font(
-            "SymbolsNerdFont-Regular.ttf",
+            "SymbolsNerdFont",
             include_font!("SymbolsNerdFont-Regular.ttf"),
         );
 
-        font_registry.register_font("NotoColorEmoji.ttf", include_font!("NotoColorEmoji.ttf"));
+        font_registry.register_font("NotoColorEmoji", include_font!("NotoColorEmoji.ttf"));
 
         Self {
             gl_handler: GlHandler::new(template, display_builder),

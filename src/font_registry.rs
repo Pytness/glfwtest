@@ -1,3 +1,13 @@
+use fontconfig::FC_SLANT;
+use fontconfig::FC_SLANT_ITALIC;
+use fontconfig::FC_WEIGHT;
+use fontconfig::FC_WEIGHT_BOLD;
+use fontconfig::Fontconfig;
+use fontconfig::Pattern;
+use fontconfig_sys::Fc;
+use fontconfig_sys::FcPattern;
+use fontconfig_sys::ffi_dispatch;
+use fontconfig_sys::statics::{LIB, LIB_RESULT};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -31,6 +41,30 @@ pub struct FontRegistry {
     shape_buffer: RefCell<Option<UnicodeBuffer>>,
 }
 
+fn delpattern(pattern: &mut Pattern, object: &str) {
+    unsafe {
+        (LIB.FcPatternDel)(pattern.as_mut_ptr(), object.as_ptr() as *const i8);
+    }
+}
+
+fn loadfont(pattern: &Pattern) {
+    let mut pattern = pattern.clone();
+    let slant = pattern.get_int(FC_SLANT);
+    let weight = pattern.get_int(FC_WEIGHT);
+
+    let fmatch = pattern.font_match();
+    let name = fmatch.name().unwrap_or("unknown").to_string();
+
+    let match_slant = fmatch.get_int(FC_SLANT);
+    let match_weight = fmatch.get_int(FC_WEIGHT);
+
+    let face_index = fmatch.face_index();
+    println!(
+        "Requested pattern ({:?}) @ {:?}: slant={:?}|{:?}, weight={:?}|{:?}",
+        name, face_index, slant, match_slant, weight, match_weight
+    );
+}
+
 impl FontRegistry {
     pub fn new() -> Self {
         FontRegistry {
@@ -40,6 +74,30 @@ impl FontRegistry {
     }
 
     pub fn register_font(&mut self, name: &str, bytes: &'static [u8]) {
+        let fontconfig = Fontconfig::new().expect("failed to create fontconfig instance");
+
+        let mut pattern = unsafe {
+            Pattern::from_pattern(
+                &fontconfig,
+                (LIB.FcNameParse)(name.as_ptr() as *const u8) as *mut FcPattern,
+            )
+        };
+        loadfont(&pattern);
+
+        pattern.add_integer(FC_SLANT, FC_SLANT_ITALIC);
+        loadfont(&pattern);
+
+        pattern.add_integer(FC_WEIGHT, FC_WEIGHT_BOLD);
+        loadfont(&pattern);
+
+        unsafe {
+            (LIB.FcPatternDel)(pattern.as_mut_ptr(), FC_SLANT.as_ptr() as *const i8);
+        }
+
+        delpattern(&mut pattern, FC_SLANT.to_str().unwrap());
+        pattern.add_integer(FC_SLANT, 0);
+        loadfont(&pattern);
+
         let bytes = Rc::new(bytes);
 
         let ft_face = FT_LIB
