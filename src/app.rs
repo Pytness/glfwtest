@@ -142,10 +142,10 @@ impl<'a> App<'a> {
             self.gl()
                 .viewport(0, 0, size.width as i32, size.height as i32);
 
-            let input = b"hello \x1b[31mred\x1b[0m normal \x1b[48;2;0;0;255mBG\x1b[49m";
+            let input = "hello \x1b[31mr🤔d\x1b[0m normal \x1b[48;2;0;0;255mBG\x1b[49m Normal text \x1b[1mBold 🤔text\x1b[0m \x1b[3mItal🤔ic text\x1b[0m \x1b[1;3mBold + 🤔Italic text\x1b[0m Back to normal";
             let mut p = AnsiParser::new();
 
-            for &b in input {
+            for b in input.chars() {
                 if let Some(ch) = p.push(b) {
                     println!(
                         "char={} fg={:?} bg={:?}",
@@ -155,8 +155,8 @@ impl<'a> App<'a> {
             }
 
             let chars = input
-                .iter()
-                .filter_map(|&b| p.push(b))
+                .chars()
+                .filter_map(|b| p.push(b))
                 .map(|b| b as char)
                 .collect::<Vec<_>>();
 
@@ -164,9 +164,9 @@ impl<'a> App<'a> {
             println!("Rendering text: {:?}", chars);
 
             let glyphs: Vec<TermGlyph> = input
-                .iter()
+                .chars()
                 .enumerate()
-                .filter_map(|(i, &c)| {
+                .filter_map(|(i, c)| {
                     if let Some(ch) = p.push(c) {
                         println!(
                             "char={} fg={:?} bg={:?}",
@@ -182,10 +182,13 @@ impl<'a> App<'a> {
                             c => c.to_rgb(),
                         };
 
+                        let font_style = p.style.font_style;
+
                         Some(TermGlyph {
                             char: ch as char,
                             fg_color,
                             bg_color,
+                            font_style,
                         })
                     } else {
                         None
@@ -325,10 +328,10 @@ impl<'a> ApplicationHandler for App<'a> {
 
                         self.quad_renderer.as_ref().unwrap().render();
 
-                        // self.grid_renderer
-                        //     .as_ref()
-                        //     .unwrap()
-                        //     .render(cell_size, offset, size);
+                        self.grid_renderer
+                            .as_ref()
+                            .unwrap()
+                            .render(cell_size, offset, size);
                     }
 
                     gl_surface.swap_buffers(gl_context).unwrap();

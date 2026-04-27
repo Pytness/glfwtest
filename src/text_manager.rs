@@ -1,5 +1,7 @@
 use bitflags::bitflags;
 
+use crate::font_registry::FontStyle;
+
 bitflags! {
     pub struct TermGlyphMode: u8 {
         const Normal = 0;
@@ -18,6 +20,7 @@ pub struct TermGlyph {
     pub char: char,
     pub fg_color: (u8, u8, u8),
     pub bg_color: (u8, u8, u8),
+    pub font_style: FontStyle,
     // pub mode: TermGlyphMode,
     // pub decoration: TermGlyphDecoration,
 }

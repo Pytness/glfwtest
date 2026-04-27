@@ -1,3 +1,5 @@
+use fontconfig::FC_MATRIX;
+use fontconfig::FC_SIZE;
 use fontconfig::FC_SLANT;
 use fontconfig::FC_SLANT_ITALIC;
 use fontconfig::FC_WEIGHT;
@@ -5,10 +7,14 @@ use fontconfig::FC_WEIGHT_BOLD;
 use fontconfig::Fontconfig;
 use fontconfig::Pattern;
 use fontconfig_sys::Fc;
+use fontconfig_sys::FcMatrix;
 use fontconfig_sys::FcPattern;
 use fontconfig_sys::ffi_dispatch;
 use fontconfig_sys::statics::{LIB, LIB_RESULT};
+use freetype::ffi::FT_Matrix;
+use freetype::ffi::FT_Vector;
 use std::cell::RefCell;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
@@ -29,16 +35,128 @@ pub struct ShapedGlyph {
     pub y_offset: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FontStyle {
+    Regular,
+    Italic,
+    Bold,
+    ItalicBold,
+}
+
 pub struct FontEntry {
     pub name: String,
-    pub bytes: Rc<&'static [u8]>,
-    pub ft_face: Face,
-    pub rb_face: RbFace<'static>,
+    // Regular is required
+    pub regular: FontFace,
+    pub italic: Option<FontFace>,
+    pub bold: Option<FontFace>,
+    pub italic_bold: Option<FontFace>,
+}
+
+impl FontEntry {
+    pub fn regular(&self) -> &FontFace {
+        &self.regular
+    }
+
+    pub fn italic(&self) -> &FontFace {
+        self.italic.as_ref().unwrap_or(&self.regular)
+    }
+
+    pub fn bold(&self) -> &FontFace {
+        self.bold.as_ref().unwrap_or(&self.regular)
+    }
+
+    pub fn italic_bold(&self) -> &FontFace {
+        self.italic_bold.as_ref().unwrap_or(&self.regular)
+    }
+
+    pub fn style(&self, style: FontStyle) -> &FontFace {
+        match style {
+            FontStyle::Regular => self.regular(),
+            FontStyle::Italic => self.italic(),
+            FontStyle::Bold => self.bold(),
+            FontStyle::ItalicBold => self.italic_bold(),
+        }
+    }
+
+    pub fn styles(&self) -> Vec<&FontFace> {
+        [
+            Some(&self.regular),
+            self.italic.as_ref(),
+            self.bold.as_ref(),
+            self.italic_bold.as_ref(),
+        ]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect()
+    }
 }
 
 pub struct FontRegistry {
     fonts: Vec<FontEntry>,
     shape_buffer: RefCell<Option<UnicodeBuffer>>,
+}
+
+pub struct FontFace {
+    bytes: ManuallyDrop<&'static [u8]>,
+    pub ft_face: Face,
+    pub matrix: FcMatrix,
+    pub rb_face: RbFace<'static>,
+}
+
+impl FontFace {
+    fn new(match_: (String, FcMatrix)) -> Self {
+        let (path, matrix) = match_;
+
+        let bytes = std::fs::read(path).expect("failed to read font file");
+        let bytes = ManuallyDrop::new(Box::leak(bytes.into_boxed_slice()) as &'static [u8]);
+
+        let ft_face = FT_LIB
+            .new_memory_face(bytes.to_vec(), 0)
+            .expect("failed to load freetype face");
+
+        let rb_face = RbFace::from_slice(&bytes, 0).expect("failed to load rustybuzz face");
+
+        Self {
+            bytes,
+            ft_face,
+            matrix,
+            rb_face,
+        }
+    }
+
+    pub fn units_per_em(&self) -> i32 {
+        self.rb_face.units_per_em()
+    }
+
+    pub fn set_transform(&self) {
+        let matrix = self.matrix;
+        let mut matrix = FT_Matrix {
+            xx: (matrix.xx * 0x10000 as f64) as i64,
+            xy: (matrix.xy * 0x10000 as f64) as i64,
+            yx: (matrix.yx * 0x10000 as f64) as i64,
+            yy: (matrix.yy * 0x10000 as f64) as i64,
+        };
+
+        let mut vector = FT_Vector { x: 0, y: 0 };
+        println!(
+            "Setting transform for font '{}': matrix xx={:?}, xy={:?}, yx={:?}, yy={:?}",
+            self.ft_face.family_name().unwrap_or("unknown".to_string()),
+            matrix.xx,
+            matrix.xy,
+            matrix.yx,
+            matrix.yy
+        );
+        self.ft_face.set_transform(&mut matrix, &mut vector);
+    }
+}
+
+impl Drop for FontFace {
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.bytes);
+        }
+    }
 }
 
 fn delpattern(pattern: &mut Pattern, object: &str) {
@@ -47,7 +165,7 @@ fn delpattern(pattern: &mut Pattern, object: &str) {
     }
 }
 
-fn loadfont(pattern: &Pattern) {
+fn match_pattern(pattern: &Pattern) -> Option<(String, FcMatrix)> {
     let mut pattern = pattern.clone();
     let slant = pattern.get_int(FC_SLANT);
     let weight = pattern.get_int(FC_WEIGHT);
@@ -59,10 +177,50 @@ fn loadfont(pattern: &Pattern) {
     let match_weight = fmatch.get_int(FC_WEIGHT);
 
     let face_index = fmatch.face_index();
+    let filename = fmatch.filename().unwrap_or("unknown");
+
     println!(
-        "Requested pattern ({:?}) @ {:?}: slant={:?}|{:?}, weight={:?}|{:?}",
-        name, face_index, slant, match_slant, weight, match_weight
+        "Matched font: '{}', requested slant={:?}, weight={:?}, got slant={:?}, weight={:?}, face_index={:?}, filename='{}'",
+        name, slant, weight, match_slant, match_weight, face_index, filename
     );
+    fmatch.print();
+
+    let mut matrix: *mut FcMatrix = std::ptr::null_mut();
+    // fn FcPatternGetMatrix( *mut FcPattern, *const c_char, c_int, *mut *mut FcMatrix) -> FcResult,
+    unsafe {
+        (LIB.FcPatternGetMatrix)(
+            fmatch.as_ptr() as *mut FcPattern,
+            FC_MATRIX.as_ptr() as *const i8,
+            0,
+            &mut matrix as *mut *mut FcMatrix,
+        )
+    };
+
+    let matrix: FcMatrix = if matrix.is_null() {
+        FcMatrix {
+            xx: 1.0,
+            xy: 0.0,
+            yx: 0.0,
+            yy: 1.0,
+        }
+    } else {
+        unsafe { *matrix }
+    };
+
+    println!(
+        "Font matrix: xx={:?}\n, xy={:?}\n, yx={:?}\n, yy={:?}",
+        matrix.xx, matrix.xy, matrix.yx, matrix.yy
+    );
+
+    // if slant.is_some() && match_slant != slant {
+    //     return None;
+    // }
+    //
+    // if weight.is_some() && match_weight != weight {
+    //     return None;
+    // }
+
+    Some((fmatch.filename().unwrap().to_string(), matrix))
 }
 
 impl FontRegistry {
@@ -82,13 +240,15 @@ impl FontRegistry {
                 (LIB.FcNameParse)(name.as_ptr() as *const u8) as *mut FcPattern,
             )
         };
-        loadfont(&pattern);
+
+        pattern.add_integer(FC_SIZE, 10);
+        let regular = match_pattern(&pattern);
 
         pattern.add_integer(FC_SLANT, FC_SLANT_ITALIC);
-        loadfont(&pattern);
+        let italic = match_pattern(&pattern);
 
         pattern.add_integer(FC_WEIGHT, FC_WEIGHT_BOLD);
-        loadfont(&pattern);
+        let italic_bold = match_pattern(&pattern);
 
         unsafe {
             (LIB.FcPatternDel)(pattern.as_mut_ptr(), FC_SLANT.as_ptr() as *const i8);
@@ -96,21 +256,22 @@ impl FontRegistry {
 
         delpattern(&mut pattern, FC_SLANT.to_str().unwrap());
         pattern.add_integer(FC_SLANT, 0);
-        loadfont(&pattern);
+        let bold = match_pattern(&pattern);
 
-        let bytes = Rc::new(bytes);
+        if regular.is_none() {
+            println!("Warning: failed to find regular style for font '{}'", name);
 
-        let ft_face = FT_LIB
-            .new_memory_face(bytes.clone().to_vec(), 0)
-            .expect("failed to load freetype face");
-
-        let rb_face = RbFace::from_slice(&bytes, 0).expect("failed to load rustybuzz face");
+            return;
+        }
 
         self.fonts.push(FontEntry {
             name: name.to_string(),
-            bytes,
-            ft_face,
-            rb_face,
+            regular: regular
+                .map(|path| FontFace::new(path))
+                .expect("regular style is required"),
+            italic: italic.map(|path| FontFace::new(path)),
+            bold: bold.map(|path| FontFace::new(path)),
+            italic_bold: italic_bold.map(|path| FontFace::new(path)),
         });
     }
 
@@ -168,28 +329,33 @@ impl FontRegistry {
         let dpi = dpi.unwrap_or(DEFAULT_DPI);
 
         for font in &self.fonts {
-            println!(
-                "Setting char size for font '{}': char_size={}, dpi={}",
-                font.name, char_size, dpi
-            );
-
-            if !font.ft_face.has_color() {
-                font.ft_face
-                    .set_char_size(0, char_size, dpi, dpi)
-                    .expect("failed to set char size");
-            } else {
-                self.set_color_size(&font.ft_face, char_size);
+            for style in font.styles().iter() {
                 println!(
-                    "Skipping char size setting for font '{}' because it has color glyphs",
-                    font.name
+                    "Setting char size for font '{}': char_size={}, dpi={}",
+                    style.ft_face.family_name().unwrap_or("unknown".to_string()),
+                    char_size,
+                    dpi
                 );
+
+                if !style.ft_face.has_color() {
+                    style
+                        .ft_face
+                        .set_char_size(0, char_size, dpi, dpi)
+                        .expect("failed to set char size");
+                } else {
+                    self.set_color_size(&style.ft_face, char_size);
+                    println!(
+                        "Skipping char size setting for font '{}' because it has color glyphs",
+                        style.ft_face.family_name().unwrap_or("unknown".to_string())
+                    );
+                }
             }
         }
     }
 
     pub fn get_char_index(&self, char_code: char) -> Option<(usize, u32)> {
         for (font_index, entry) in self.fonts.iter().enumerate() {
-            let glyph_id = entry.ft_face.get_char_index(char_code as usize);
+            let glyph_id = entry.regular().ft_face.get_char_index(char_code as usize);
             println!(
                 "Font '{}': char code '{}' (U+{:04X}) maps to glyph ID {:?}",
                 entry.name, char_code, char_code as u32, glyph_id
@@ -209,43 +375,6 @@ impl FontRegistry {
         None
     }
 
-    pub fn load_glyph_by_id(&self, glyph_id: u32, load_flags: LoadFlag) -> Option<&GlyphSlot> {
-        let mut glyph: Option<&GlyphSlot> = None;
-
-        for entry in self.fonts.iter() {
-            let r = entry.ft_face.load_glyph(glyph_id, load_flags);
-
-            if let Ok(_) = r {
-                let g = entry.ft_face.glyph();
-                println!("Loaded glyph {} from font '{}'", glyph_id, entry.name,);
-                glyph = Some(entry.ft_face.glyph());
-                break;
-            }
-        }
-
-        return glyph;
-    }
-
-    pub fn load_glyph_by_char(&self, char_code: char, load_flags: LoadFlag) -> Option<&GlyphSlot> {
-        if let Some((font_index, glyph_id)) = self.get_char_index(char_code) {
-            let face = &self.fonts[font_index].ft_face;
-            return face
-                .load_glyph(glyph_id, load_flags)
-                .ok()
-                .map(|_| face.glyph());
-        }
-
-        None
-    }
-
-    pub fn load_glyph(&self, glyph: &ShapedGlyph, load_flags: LoadFlag) -> Option<&GlyphSlot> {
-        if glyph.glyph_id == 0 {
-            self.load_glyph_by_char(glyph.char, load_flags)
-        } else {
-            self.load_glyph_by_id(glyph.glyph_id, load_flags)
-        }
-    }
-
     pub fn shape_text(&self, chars: &[char]) -> Vec<ShapedGlyph> {
         let mut buffer = self
             .shape_buffer
@@ -257,7 +386,7 @@ impl FontRegistry {
         buffer.push_str(&text);
 
         let font = self.fonts.first().expect("no fonts registered");
-        let shaped = rustybuzz::shape(&font.rb_face, &[], buffer);
+        let shaped = rustybuzz::shape(&font.regular().rb_face, &[], buffer);
 
         let infos = shaped.glyph_infos();
         let positions = shaped.glyph_positions();
@@ -291,6 +420,6 @@ impl FontRegistry {
     pub fn size_metrics(&self) -> Option<freetype::ffi::FT_Size_Metrics> {
         let font = self.fonts.first()?;
 
-        font.ft_face.size_metrics()
+        font.regular().ft_face.size_metrics()
     }
 }

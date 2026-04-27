@@ -1,3 +1,5 @@
+use crate::font_registry::FontStyle;
+
 const INDEXED_COLORS: [(u8, u8, u8); 8] = [
     // Black
     (0, 0, 0),
@@ -52,6 +54,7 @@ impl Color {
 pub struct Style {
     pub fg: Color,
     pub bg: Color,
+    pub font_style: FontStyle,
 }
 
 impl Default for Style {
@@ -59,6 +62,7 @@ impl Default for Style {
         Self {
             fg: Color::Default,
             bg: Color::Default,
+            font_style: FontStyle::Regular,
         }
     }
 }
@@ -72,7 +76,7 @@ enum State {
 
 pub struct AnsiParser {
     state: State,
-    buf: [u8; 64],
+    buf: [char; 64],
     len: usize,
     pub style: Style,
 }
@@ -81,26 +85,25 @@ impl AnsiParser {
     pub fn new() -> Self {
         Self {
             state: State::Ground,
-            buf: [0; 64],
+            buf: ['\0'; 64],
             len: 0,
             style: Style::default(),
         }
     }
 
-    /// Feeds one byte.
-    /// Returns Some(byte) only for printable non-escape text.
-    pub fn push(&mut self, b: u8) -> Option<u8> {
+    pub fn push(&mut self, v: char) -> Option<char> {
+        let b = v as usize;
         match self.state {
             State::Ground => {
                 if b == 0x1b {
                     self.state = State::Esc;
                     None
                 } else {
-                    Some(b)
+                    Some(v)
                 }
             }
             State::Esc => {
-                if b == b'[' {
+                if v == '[' {
                     self.state = State::Csi;
                     self.len = 0;
                 } else {
@@ -109,12 +112,12 @@ impl AnsiParser {
                 None
             }
             State::Csi => {
-                if b == b'm' {
+                if v == 'm' {
                     self.apply_sgr();
                     self.state = State::Ground;
                     self.len = 0;
                 } else if self.len < self.buf.len() {
-                    self.buf[self.len] = b;
+                    self.buf[self.len] = v;
                     self.len += 1;
                 } else {
                     // overflow: drop sequence
@@ -127,10 +130,7 @@ impl AnsiParser {
     }
 
     fn apply_sgr(&mut self) {
-        let s = match core::str::from_utf8(&self.buf[..self.len]) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+        let s = self.buf[..self.len].iter().collect::<String>();
 
         // Empty SGR = reset
         if s.is_empty() {
@@ -154,6 +154,25 @@ impl AnsiParser {
             match nums[i] {
                 0 => {
                     self.style = Style::default();
+                    i += 1;
+                }
+
+                1 => {
+                    if self.style.font_style == FontStyle::Italic {
+                        self.style.font_style = FontStyle::ItalicBold;
+                    } else {
+                        self.style.font_style = FontStyle::Bold;
+                    }
+                    i += 1;
+                }
+
+                3 => {
+                    if self.style.font_style == FontStyle::Bold {
+                        self.style.font_style = FontStyle::ItalicBold;
+                    } else {
+                        self.style.font_style = FontStyle::Italic;
+                    }
+
                     i += 1;
                 }
 

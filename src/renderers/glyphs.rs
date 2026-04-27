@@ -3,12 +3,13 @@ use std::mem::{offset_of, size_of};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
+use fontconfig_sys::FcMatrix;
 use freetype::bitmap::PixelMode;
+use freetype::ffi::FT_Matrix;
 use freetype::{Library, face::LoadFlag};
 use glow::HasContext;
-use rustybuzz::Face as RbFace;
 
-use crate::font_registry::{FontRegistry, ShapedGlyph};
+use crate::font_registry::{FontRegistry, FontStyle, ShapedGlyph};
 use crate::macros::macs::include_shader;
 use crate::text_manager::{TermGlyph, TextManager};
 
@@ -42,18 +43,17 @@ struct GlyphTexture {
     top: i32,
     is_color: bool,
     scale: f32,
+    matrix: FcMatrix,
     cell_width: usize,
 }
 
 pub struct TextRenderer<'a> {
     gl: Rc<glow::Context>,
-    // font_data must outlive rb_face; both are dropped explicitly in Drop (rb_face first)
     font_registry: &'a FontRegistry,
-    rb_face: RbFace<'a>,
 
     pub text_manager: TextManager,
 
-    glyphs: HashMap<(usize, u32), GlyphTexture>,
+    glyphs: HashMap<(usize, u32, FontStyle), GlyphTexture>,
 
     program: glow::NativeProgram,
     vao: glow::NativeVertexArray,
@@ -70,7 +70,12 @@ pub struct TextRenderer<'a> {
 
 impl<'a> TextRenderer<'a> {
     pub fn units_per_em(&self) -> f32 {
-        self.rb_face.units_per_em() as f32
+        self.font_registry
+            .get_fonts()
+            .first()
+            .expect("no fonts registered")
+            .regular()
+            .units_per_em() as f32
     }
 
     /// Returns (width, height) of the font at the current pixel size.
@@ -119,20 +124,6 @@ impl<'a> TextRenderer<'a> {
         px_size: u32,
         size: (i32, i32),
     ) -> Self {
-        // Box the font bytes so they can be freed when the renderer is dropped.
-        let font_data: &[u8] = font_registry
-            .get_fonts()
-            .first()
-            .expect("no fonts registered")
-            .bytes
-            .as_ref();
-
-        // SAFETY: we extend the lifetime to 'static here, but we guarantee that
-        // rb_face (which borrows this data) is dropped before font_data in our Drop impl.
-        let rb_face = RbFace::from_slice(font_data, 0).expect("failed to create rustybuzz face");
-
-        // let ttf_face = TtfFace::parse(font_data, 0).expect("failed to create ttf_parser face");
-
         // BUG:
         // freetype-sys uses an incorrect value for FT_LCD_FILTER_LIGHT (3 instead of 2)
         // which causes the call to set_lcd_filter to fail with "Invalid argument".
@@ -188,7 +179,6 @@ impl<'a> TextRenderer<'a> {
         Self {
             gl,
             font_registry,
-            rb_face,
             text_manager,
             glyphs: HashMap::new(),
             program,
@@ -221,10 +211,10 @@ impl<'a> TextRenderer<'a> {
     /// Ensures the glyph is loaded and cached.
     /// Returns a tuple of (left, top, width, height, tex) to avoid holding a
     /// reference into `self.glyphs` across subsequent `self` accesses.
-    fn ensure_glyph(&mut self, glyph: &ShapedGlyph) -> Option<&GlyphTexture> {
-        let key = (glyph.font_index, glyph.glyph_id);
+    fn ensure_glyph(&mut self, glyph: &ShapedGlyph, style: FontStyle) -> Option<&GlyphTexture> {
+        let key = (glyph.font_index, glyph.glyph_id, style);
         if !self.glyphs.contains_key(&key) {
-            let texture = unsafe { self.load_glyph_texture(glyph)? };
+            let texture = unsafe { self.load_glyph_texture(glyph, style)? };
             self.glyphs.insert(key, texture);
         }
 
@@ -232,8 +222,16 @@ impl<'a> TextRenderer<'a> {
     }
 
     /// Rasterises a single glyph with FreeType and uploads it to a GL texture.
-    unsafe fn load_glyph_texture(&self, glyph: &ShapedGlyph) -> Option<GlyphTexture> {
-        let ft_face = &self.font_registry.get_fonts()[glyph.font_index].ft_face;
+    unsafe fn load_glyph_texture(
+        &self,
+        glyph: &ShapedGlyph,
+        style: FontStyle,
+    ) -> Option<GlyphTexture> {
+        let style = self.font_registry.get_fonts()[glyph.font_index].style(style);
+        let ft_face = &style.ft_face;
+        let matrix = style.matrix;
+        // style.set_transform();
+
         ft_face
             .load_glyph(
                 glyph.glyph_id,
@@ -295,7 +293,7 @@ impl<'a> TextRenderer<'a> {
         } else {
             unicode_width::UnicodeWidthChar::width(glyph.char).unwrap_or(1)
         };
-        let scale = (width as f32 / (cell_width as f32 * self.font_size_px.width)).max(1.0);
+        let scale = (height as f32 / self.font_size_px.height).max(1.0);
 
         unsafe {
             let gl = self.gl.as_ref();
@@ -315,20 +313,22 @@ impl<'a> TextRenderer<'a> {
                 glow::PixelUnpackData::Slice(Some(bitmap.buffer())),
             );
 
+            gl.generate_mipmap(glow::TEXTURE_2D);
+
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
+                glow::CLAMP_TO_BORDER as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
+                glow::LINEAR_MIPMAP_LINEAR as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -344,6 +344,7 @@ impl<'a> TextRenderer<'a> {
                 top,
                 is_color,
                 scale,
+                matrix,
                 cell_width,
             })
         }
@@ -413,7 +414,12 @@ impl<'a> TextRenderer<'a> {
 
         let glyph_widths: Vec<usize> = shaped
             .iter()
-            .map(|g| self.ensure_glyph(g).map(|t| t.cell_width).unwrap_or(1))
+            .zip(glyphs.iter())
+            .map(|(s, g)| {
+                self.ensure_glyph(s, g.font_style)
+                    .map(|t| t.cell_width)
+                    .unwrap_or(1)
+            })
             .collect();
 
         unsafe {
@@ -452,16 +458,17 @@ impl<'a> TextRenderer<'a> {
                     tex,
                     is_color,
                     scale,
+                    matrix,
                     cell_width,
-                }) = self.ensure_glyph(shaped_g)
+                }) = self.ensure_glyph(shaped_g, term_g.font_style)
                 else {
                     println!("Warning: glyph ID {} not found in font", shaped_g.glyph_id);
                     continue;
                 };
 
                 println!(
-                    "Drawing glyph ({})='{}': left={}, top={}, width={}, height={}, is_color={}",
-                    shaped_g.glyph_id, shaped_g.char, left, top, width, height, is_color
+                    "Drawing glyph ({})='{}': left={}, top={}, width={}, height={}, is_color={}, scale={}",
+                    shaped_g.glyph_id, shaped_g.char, left, top, width, height, is_color, scale
                 );
 
                 // Scale top
@@ -490,13 +497,14 @@ impl<'a> TextRenderer<'a> {
                 ];
 
                 if w > 0.0 && h > 0.0 {
-                    let vertex_positions = [
-                        (x, y),
-                        (x + w, y),
-                        (x + w, y + h),
-                        (x, y),
-                        (x + w, y + h),
-                        (x, y + h),
+                    #[rustfmt::skip]
+                    let mut vertex_positions = [
+                        (0.0, 0.0),
+                        (  w, 0.0),
+                        (  w,   h),
+                        (0.0, 0.0),
+                        (  w,   h),
+                        (0.0,   h),
                     ];
 
                     let mut vertex_uvs = [
@@ -508,14 +516,42 @@ impl<'a> TextRenderer<'a> {
                         (0.0, 1.0),
                     ];
 
+                    let shear = if matrix.xx != 0.0 {
+                        (matrix.xy / matrix.xx) as f32
+                    } else {
+                        0.0
+                    };
+
                     // Transform vertex_uvs to match terminal cell height and width
                     if is_color {
-                        vertex_uvs = vertex_uvs.map(|(u, v)| {
-                            let u = u * scale;
-                            let v = v * scale;
-                            (u, v)
+                        // vertex_uvs = vertex_uvs.map(|(x, y)| {
+                        //     let x = x * scale;
+                        //     let y = y * scale;
+                        //     (x, y)
+                        // });
+
+                        vertex_positions = vertex_positions.map(|(x, y)| {
+                            let x = x / scale;
+                            let y = y / scale;
+
+                            (x - y * shear, y)
                         });
+
+                        let min_x = vertex_positions
+                            .iter()
+                            .map(|(x, _)| *x)
+                            .fold(f32::INFINITY, f32::min);
+
+                        let min_y = vertex_positions
+                            .iter()
+                            .map(|(_, y)| *y)
+                            .fold(f32::INFINITY, f32::min);
+
+                        vertex_positions = vertex_positions.map(|(x, y)| (x - min_x, y)); // Shift left to align with cell start
                     }
+
+                    vertex_positions =
+                        vertex_positions.map(|(local_x, local_y)| (local_x + x, local_y + y));
 
                     let vertices: Vec<Vertex> = vertex_positions
                         .iter()
@@ -553,13 +589,13 @@ impl<'a> TextRenderer<'a> {
                     // Limit drawing to the row to prevent glyphs from bleeding into adjacent rows
                     // while allowing ligatures and diacritics to render correctly
                     // within neighbouring cells.
-                    gl.enable(glow::SCISSOR_TEST);
-                    gl.scissor(
-                        pen_x as i32,
-                        self.text_manager.window_height - cell_box.y,
-                        width + left,
-                        cell_box.height,
-                    );
+                    // gl.enable(glow::SCISSOR_TEST);
+                    // gl.scissor(
+                    //     pen_x as i32,
+                    //     self.text_manager.window_height - cell_box.y,
+                    //     width + left,
+                    //     cell_box.height,
+                    // );
 
                     gl.draw_arrays(glow::TRIANGLES, 0, 6);
                     gl.disable(glow::SCISSOR_TEST);
@@ -594,10 +630,6 @@ impl<'a> Drop for TextRenderer<'a> {
             gl.delete_vertex_array(self.vao);
             gl.delete_buffer(self.vbo);
             gl.delete_program(self.program);
-
-            // Drop rb_face before releasing the font data it references.
-            // ManuallyDrop::drop(&mut self.rb_face);
-            // ManuallyDrop::drop(&mut self._font_data);
         }
     }
 }
