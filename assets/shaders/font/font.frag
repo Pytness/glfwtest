@@ -13,7 +13,7 @@ void main() {
     if (u_is_color) {
         float alpha = tex.a;
         vec3 color = mix(u_background_color, tex.rgb, alpha);
-        frag_color = vec4(color, alpha);
+        frag_color = tex;
     } else {
         float alpha = tex.r;
        frag_color = vec4(u_text_color, alpha);
